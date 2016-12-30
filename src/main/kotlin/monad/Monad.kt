@@ -1,6 +1,7 @@
 package monad
 
 import applicative.Applicative
+import applicative.curry
 import fj.F
 import fj.F2
 import fj.Function
@@ -10,15 +11,15 @@ import fj.data.List
 import fj.data.Stream
 import fj.test.Gen
 import fj.test.Property
-import monoid.Monoid
-import monoid.foldMapV
-import monoid.tripleGen
+import monoid.*
 
 /**
  * Created by yume on 16-12-27.
  */
 
 interface H1<X, T>
+
+interface H2<X, Y, T> : H1<X, H1<Y, T>>
 
 interface Functor<F> {
     fun <A, B> map(fa: H1<F, A>, f: (A) -> B): H1<F, B>
@@ -100,7 +101,7 @@ fun <M, A, B> monadIdentityLaw(gen: Gen<A>, fGen: Gen<F<A, B>>, m: Monad<M>): Pr
 
 
 //List Monad
-class HTypeList<T>(val l: List<T>) : H1<ListU, T>
+data class HTypeList<T>(val l: List<T>) : H1<ListU, T>
 
 object ListU
 
@@ -118,7 +119,7 @@ val listMonad = object : Monad<ListU> {
 
 
 //Option Monad
-class HTypeOption<T>(val l: Option<T>) : H1<OptionU, T>
+data class HTypeOption<T>(val l: Option<T>) : H1<OptionU, T>
 
 object OptionU
 
@@ -186,7 +187,7 @@ class ReaderMonads<R> {
 }
 
 
-//Option Monad
+//Either Monad
 class EitherType<L> {
     inner class HTypeEither<R>(val r: Either<L, R>) : H1<EitherU, R>
 
@@ -211,11 +212,15 @@ fun <L> EitherType<L>.eitherMonad(): Monad<EitherType.EitherU> =
         }
 
 
-
+/**
+ * foldRight、foldLeft、foldMap相互实现，所以具体实现时需要不依赖另外两个方法实现其中一个
+ */
 interface Foldable<F> {
-    fun <A, B> foldRight(la: H1<F, A>, z: B, f: (A, B) -> B): B
+    fun <A, B> foldRight(la: H1<F, A>, z: B, f: (A, B) -> B): B =
+            foldMap(la, f.curry(), endoMonoid<B>())(z)
 
-    fun <A, B> foldLeft(la: H1<F, A>, z: B, f: (B, A) -> B): B
+    fun <A, B> foldLeft(la: H1<F, A>, z: B, f: (B, A) -> B): B =
+            foldMap(la, { a -> { b: B -> f(b, a) } }, dual(endoMonoid<B>()))(z)
 
     fun <A, B> foldMap(ls: H1<F, A>, f: (A) -> B, mb: Monoid<B>): B =
             foldLeft(ls, mb.zero(), { b, a -> mb.op(f(a), b) })

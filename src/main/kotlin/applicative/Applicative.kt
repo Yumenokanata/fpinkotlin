@@ -8,13 +8,12 @@ import fj.data.Stream
 import fj.test.Gen
 import fj.test.Property
 import monad.*
+import monoid.Monoid
 import java.util.*
 
 /**
  * Created by yume on 16-12-28.
  */
-
-fun <A, B, C> Function2<A, B, C>.curry(): (A) -> (B) -> C = { a -> { b -> this(a, b)} }
 
 /**
  * 应用函子
@@ -65,6 +64,8 @@ interface Applicative<F> : Functor<F> {
 
 
     /**
+     * 应用函子组合子，用于组合不同的应用函子
+     *
      * Scala:
      * def product[G[_]](G: Applicative[G]): Applicative[({type f[x] = (F[x], G[x])})#f] = {
      *   val self = this
@@ -76,27 +77,27 @@ interface Applicative<F> : Functor<F> {
      * }
      */
     fun <G> product(g: Applicative<G>): Applicative<Pair<F, G>> {
-        typealias FU = Pair<F, G>
-
         data class FApply<T>(val f: H1<F, T>, val g: H1<G, T>) : H1<Pair<F, G>, T>
 
         @Suppress("UNCHECKED_CAST")
-        fun <T> narrow(value: H1<FU, T>): FApply<T> = value as FApply<T>
+        fun <T> narrow(value: H1<Pair<F, G>, T>): FApply<T> = value as FApply<T>
 
-        return object : Applicative<FU> {
-            override fun <A> unit(a: () -> A): H1<FU, A> =
+        return object : Applicative<Pair<F, G>> {
+            override fun <A> unit(a: () -> A): H1<Pair<F, G>, A> =
                     FApply(this@Applicative.unit(a), g.unit(a))
 
-            override fun <A, B> apply(fab: H1<FU, (A) -> B>, fa: H1<FU, A>): H1<FU, B> =
+            override fun <A, B> apply(fab: H1<Pair<F, G>, (A) -> B>, fa: H1<Pair<F, G>, A>): H1<Pair<F, G>, B> =
                     FApply(this@Applicative.apply(narrow(fab).f, narrow(fa).f),
                             g.apply(narrow(fab).g, narrow(fa).g))
 
-            override fun <A, B, C> map2(fa: H1<FU, A>, fb: H1<FU, B>, f: (A, B) -> C): H1<FU, C> =
+            override fun <A, B, C> map2(fa: H1<Pair<F, G>, A>, fb: H1<Pair<F, G>, B>, f: (A, B) -> C): H1<Pair<F, G>, C> =
                     apply(map<A, (B) -> C>(fa) { a -> { b -> f(a, b) } }, fb)
         }
     }
 
     /**
+     * 应用函子组合子，用于组合不同的应用函子
+     *
      * Here we simply use `map2` to lift `apply` and `unit` themselves from one
      * Applicative into the other.
      * If `self` and `G` both satisfy the laws, then so does the composite.
@@ -114,18 +115,16 @@ interface Applicative<F> : Functor<F> {
      * }
      */
     fun <G> compose(g: Applicative<G>): Applicative<H1<F, G>> {
-        typealias FCU = H1<F, G>
-
         data class FCApply<T>(val f: H1<F, H1<G, T>>) : H1<H1<F, G>, T>
 
         @Suppress("UNCHECKED_CAST")
-        fun <T> narrow(value: H1<FCU, T>): FCApply<T> = value as FCApply<T>
+        fun <T> narrow(value: H1<H1<F, G>, T>): FCApply<T> = value as FCApply<T>
 
-        return object : Applicative<FCU> {
-            override fun <A> unit(a: () -> A): H1<FCU, A> =
+        return object : Applicative<H1<F, G>> {
+            override fun <A> unit(a: () -> A): H1<H1<F, G>, A> =
                     FCApply(this@Applicative.unit(g.unit(a)))
 
-            override fun <A, B, C> map2(fa: H1<FCU, A>, fb: H1<FCU, B>, f: (A, B) -> C): H1<FCU, C> =
+            override fun <A, B, C> map2(fa: H1<H1<F, G>, A>, fb: H1<H1<F, G>, B>, f: (A, B) -> C): H1<H1<F, G>, C> =
                     FCApply(this@Applicative.map2(narrow(fa).f, narrow(fb).f) { ga, gb -> g.map2(ga, gb, f) })
         }
     }
@@ -155,7 +154,7 @@ fun <A, I, O, I2, O2> naturalityLaw(aGen: Gen<I>,
     ) })
 }
 
-
+//Stream的应用函子
 data class StreamApplicative<T>(val s: Stream<T>) : H1<StreamU, T>
 
 object StreamU
@@ -176,6 +175,36 @@ sealed class Validation<out E, out A> {
     data class Success<A>(val a: A) : Validation<Nothing, A>()
 }
 
+/**
+ * Validation的Applicative实例可以累计失败时的错误，失败的情况下，至少会有一个error存在于列表的head，其余error累加在列表的tail。
+ *
+ * eg：
+ *
+ * data class WebForm(val name: String, val birthdate: Date, val phoneNumber: String)
+ *
+ * fun validName(name: String): Validation<String, String> =
+ *         if (name != "") Success(name)
+ *         else Failure("Name cannot be empty")
+ *
+ * fun validBirthdate(birthdate: String): Validation<String, Date> =
+ *         try {
+ *             Success((SimpleDateFormat("yyyy-MM-dd").parse(birthdate)))
+ *         } catch (e: Exception) {
+ *             Failure("Birthdate must be in the form yyyy-MM-dd")
+ *         }
+ *
+ * fun validPhone(phoneNumber: String): Validation<String, String> =
+ *         if (phoneNumber.matches("[0-9]{10}")) Success(phoneNumber)
+ *         else Failure("Phone number must be 10 digits")
+ *
+ * fun validWebForm(name: String,
+ *                  birthdate: String,
+ *                  phone: String): Validation<String, String> =
+ *         map3(validName(name),
+ *              validBirthdate(birthdate),
+ *              validPhone(phone))
+ *              { n, b, p -> WebForm(n, b, p) }
+ */
 class ValidaApplicative<E> {
     inner class ApplyValida<R>(val r: Validation<E, R>) : H1<ValidaU, R>
 
@@ -209,8 +238,19 @@ class ValidaApplicative<E> {
  *
  * traverse、sequence、map相互实现，所以具体实现时需要不依赖另外两个方法实现其中一个
  *
+ * 范化的traverse操作就像fold一样接收一些数据结构并按顺序作用函数以制造一个结果，不同的是traverse保存了原始的结构，
+ * 而foldMap丢弃了结构并以一个monoid操作的结果替代。比如：
+ *
+ * * List<Option<A>> -> Option<List<A>>: (使用Option作为Applicative对Traverse<List>.sequence调用)假如任何一个输入链表
+ *   的元素是None，则结果返回None，否则，将返回包裹在Some里面的原始链表
+ *
+ * * ListTree<Option<A>> -> Option<ListTree<A>>: (使用Option作为Applicative对Traverse<ListTree>.sequence调用)假如任
+ *   何一个输入树的元素是None，则结果返回None，否则，将返回包裹在Some里面的原始树
+ *
+ * * Map<K, Par<A>> -> Par<Map<K, A>>: (使用Par作为Applicative对Traverse<Map<K, _>>.sequence调用)产生一个并行计算去并
+ *   行计算map里的所有元素
  */
-interface Traverse<F> {
+interface Traverse<F> : Functor<F>, Foldable<F> {
     fun <T, App: Applicative<T>, A, B> traverse(fa: H1<F, A>, f: (A) -> H1<T, B>, apply: App): H1<T, H1<F, B>> =
             sequence(map(fa, f), apply)
 
@@ -232,16 +272,45 @@ interface Traverse<F> {
                     f(narrow(fa).a)
         }
 
-    fun <A, B> map(fa: H1<F, A>, f: (A) -> B): H1<F, B> =
+    /**
+     * 使用traverse可以实现map，这表明Traverse是一个函子的扩展，traverse函数是一个泛化的map
+     * (正因如此，有时称它为可遍历函子)
+     */
+    override fun <A, B> map(fa: H1<F, A>, f: (A) -> B): H1<F, B> =
             narrow(traverse(fa, { a -> idMonad.unit(f(a)) }, idMonad)).a
+
+    /**
+     * Traverse可以继承并实现Foldable和Functor，但注意，Foldable是不可能继承函子（Functor）的
+     * 问题：为什么Foldable不可能继承函子？可以想出一个不是函子的Foldable吗？
+     */
+    override fun <A, B> foldMap(ls: H1<F, A>, f: (A) -> B, mb: Monoid<B>): B =
+            narrow(
+                    traverse<ConstU<B>, Applicative<ConstU<B>>, A, Nothing>(ls, { a -> HTypeConst(f(a)) }, monoidApplicative(mb))
+            ).a
 }
 
+data class HTypeConst<A, B>(val a: A) : H1<ConstU<A>, B>
+
+class ConstU<A>
+
+fun <A, B> narrow(value: H1<ConstU<A>, B>): HTypeConst<A, B> = value as HTypeConst<A, B>
+
+fun <M> monoidApplicative(m: Monoid<M>) =
+        object : Applicative<ConstU<M>> {
+            override fun <A> unit(a: () -> A): H1<ConstU<M>, A> = HTypeConst(m.zero())
+
+            override fun <A, B, C> map2(fa: H1<ConstU<M>, A>, fb: H1<ConstU<M>, B>, f: (A, B) -> C): H1<ConstU<M>, C> =
+                    HTypeConst(m.op(narrow(fa).a, narrow(fb).a))
+        }
+
+//List的可遍历函子
 val listTraverse = object : Traverse<ListU> {
     override fun <T, App : Applicative<T>, A, B> traverse(fa: H1<ListU, A>, f: (A) -> H1<T, B>, apply: App): H1<T, H1<ListU, B>> =
             apply.map(narrow(fa).l.foldRight({ a, fbs -> apply.map2(f(a), fbs, { h, l -> h cons l }) }, apply.unit(List.nil<B>())))
             { HTypeList(it) }
 }
 
+//Option的可遍历函子
 val optionTraverse = object : Traverse<OptionU> {
     override fun <T, App : Applicative<T>, A, B> traverse(fa: H1<OptionU, A>, f: (A) -> H1<T, B>, apply: App): H1<T, H1<OptionU, B>> {
         val option = narrow(fa).l
@@ -253,6 +322,7 @@ val optionTraverse = object : Traverse<OptionU> {
     }
 }
 
+//ListTree的可遍历函子
 data class ListTree<A>(val head: A, val tail: List<ListTree<A>>)
 
 data class HTypeListTree<T>(val t: ListTree<T>) : H1<ListTreeU, T> {
@@ -275,3 +345,6 @@ val treeTraverse = object : Traverse<ListTreeU> {
         { h, l -> HTypeListTree(h, l) }
     }
 }
+
+//Utils
+fun <A, B, C> Function2<A, B, C>.curry(): (A) -> (B) -> C = { a -> { b -> this(a, b)} }
