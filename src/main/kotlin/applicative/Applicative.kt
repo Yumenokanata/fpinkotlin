@@ -77,18 +77,15 @@ interface Applicative<F> : Functor<F> {
      * }
      */
     fun <G> product(g: Applicative<G>): Applicative<Pair<F, G>> {
-        data class FApply<T>(val f: H1<F, T>, val g: H1<G, T>) : H1<Pair<F, G>, T>
-
-        @Suppress("UNCHECKED_CAST")
-        fun <T> narrow(value: H1<Pair<F, G>, T>): FApply<T> = value as FApply<T>
+        val pairType = HTypePairFG<F, G>()
 
         return object : Applicative<Pair<F, G>> {
             override fun <A> unit(a: () -> A): H1<Pair<F, G>, A> =
-                    FApply(this@Applicative.unit(a), g.unit(a))
+                    pairType.PairFG(this@Applicative.unit(a), g.unit(a))
 
             override fun <A, B> apply(fab: H1<Pair<F, G>, (A) -> B>, fa: H1<Pair<F, G>, A>): H1<Pair<F, G>, B> =
-                    FApply(this@Applicative.apply(narrow(fab).f, narrow(fa).f),
-                            g.apply(narrow(fab).g, narrow(fa).g))
+                    pairType.PairFG(this@Applicative.apply(pairType.narrow(fab).f, pairType.narrow(fa).f),
+                            g.apply(pairType.narrow(fab).g, pairType.narrow(fa).g))
 
             override fun <A, B, C> map2(fa: H1<Pair<F, G>, A>, fb: H1<Pair<F, G>, B>, f: (A, B) -> C): H1<Pair<F, G>, C> =
                     apply(map<A, (B) -> C>(fa) { a -> { b -> f(a, b) } }, fb)
@@ -115,17 +112,14 @@ interface Applicative<F> : Functor<F> {
      * }
      */
     fun <G> compose(g: Applicative<G>): Applicative<H1<F, G>> {
-        data class FCApply<T>(val f: H1<F, H1<G, T>>) : H1<H1<F, G>, T>
-
-        @Suppress("UNCHECKED_CAST")
-        fun <T> narrow(value: H1<H1<F, G>, T>): FCApply<T> = value as FCApply<T>
+        val FGtype = HTypeFG<F,G>()
 
         return object : Applicative<H1<F, G>> {
             override fun <A> unit(a: () -> A): H1<H1<F, G>, A> =
-                    FCApply(this@Applicative.unit(g.unit(a)))
+                    FGtype.HTypeFG(this@Applicative.unit(g.unit(a)))
 
             override fun <A, B, C> map2(fa: H1<H1<F, G>, A>, fb: H1<H1<F, G>, B>, f: (A, B) -> C): H1<H1<F, G>, C> =
-                    FCApply(this@Applicative.map2(narrow(fa).f, narrow(fb).f) { ga, gb -> g.map2(ga, gb, f) })
+                    FGtype.HTypeFG(this@Applicative.map2(FGtype.narrow(fa).f, FGtype.narrow(fb).f) { ga, gb -> g.map2(ga, gb, f) })
         }
     }
 }
@@ -268,8 +262,8 @@ interface Traverse<F> : Functor<F>, Foldable<F> {
         get() = object : Monad<IdU> {
             override fun <A> unit(a: () -> A): H1<IdU, A> = HTypeId(a())
 
-            override fun <A, B> flatMap(fa: H1<IdU, A>, f: (A) -> H1<IdU, B>): H1<IdU, B> =
-                    f(narrow(fa).a)
+            override fun <A, B> flatMap(gha: H1<IdU, A>, f: (A) -> H1<IdU, B>): H1<IdU, B> =
+                    f(narrow(gha).a)
         }
 
     /**
@@ -287,6 +281,97 @@ interface Traverse<F> : Functor<F>, Foldable<F> {
             narrow(
                     traverse<ConstU<B>, Applicative<ConstU<B>>, A, Nothing>(ls, { a -> HTypeConst(f(a)) }, monoidApplicative(mb))
             ).a
+
+    fun <S, A, B> traverseS(fa: H1<F, A>, f: (A) -> State<S, B>): State<S, H1<F, B>> {
+        val stateMonad = StateMonads<S>()
+        val state = traverse(fa, { stateMonad.MonadState(f(it)) }, stateMonad.monad)
+        return stateMonad.narrow(state).s
+    }
+
+    fun <A> zipWithIndex_(ta: H1<F, A>): H1<F, Pair<A, Int>> =
+        traverseS<Int, A, Pair<A, Int>>(ta) { a ->
+            State { s -> (a to s) to s + 1 }
+        }.run(0).first
+
+    fun <A> toList_(fa: H1<F, A>): List<A> =
+            traverseS<List<A>, A, A>(fa) { a ->
+                State { s -> a to (a cons s) }
+            }.run(List.nil()).second.reverse()
+
+    //带状态的遍历
+    fun <S, A, B> mapAccum(fa: H1<F, A>, s: S, f: (A, S) -> Pair<B, S>): Pair<H1<F, B>, S> =
+            traverseS<S, A, B>(fa) { a ->
+                State { s ->
+                    val (b, s2) = f(a, s)
+                    b to s2
+                }
+            }.run(s)
+
+    fun <A> zipWithIndex(ta: H1<F, A>): H1<F, Pair<A, Int>> =
+            mapAccum(ta, 0, { a, s -> (a to s) to s + 1 }).first
+
+    override fun <A> toList(fa: H1<F, A>): List<A> =
+            mapAccum<List<A>, A, A>(fa, List.nil(), { a, s -> a to (a cons s) }).second.reverse()
+
+    fun <A> reverse(fa: H1<F, A>): H1<F, A> =
+            mapAccum<List<A>, A, A>(fa, toList(fa).reverse(), { _, s -> (s.head() to s.tail()) }).first
+
+    override fun <A, B> foldLeft(la: H1<F, A>, z: B, f: (B, A) -> B): B =
+            mapAccum(la, z, { a, b -> f(b, a) to b }).second
+
+    // 组合可遍历结构
+    fun <A, B> zip(fa: H1<F, A>, fb: H1<F, B>): H1<F, Pair<A, B>> =
+            mapAccum(fa, toList(fb)) { a, s ->
+                when {
+                    s.isNotEmpty -> (a to s.head()) to s.tail()
+                    else -> throw java.lang.RuntimeException("zip: Incompatible shapes.")
+                }
+            }.first
+
+    fun <A, B> zipL(fa: H1<F, A>, fb: H1<F, B>): H1<F, Pair<A, Option<B>>> =
+            mapAccum(fa, toList(fb)) { a, s ->
+                when {
+                    s.isNotEmpty -> (a to Option.some(s.head())) to s.tail()
+                    else -> (a to Option.none<B>()) to List.nil<B>()
+                }
+            }.first
+
+    fun <A, B> zipR(fa: H1<F, A>, fb: H1<F, B>): H1<F, Pair<Option<A>, B>> =
+            mapAccum(fb, toList(fa)) { b, s ->
+                when {
+                    s.isNotEmpty -> (Option.some(s.head()) to b) to s.tail()
+                    else -> (Option.none<A>() to b) to List.nil<A>()
+                }
+            }.first
+
+    /**
+     * 遍历融合
+     * 使用可应用函子product实现两个遍历的融合。这个函数将给出两个函数f和g，只遍历一次，收集两个函数的结果
+     */
+    fun <G, H, A, B> fuse(fa: H1<F, A>, f: (A) -> H1<G, B>, g: (A) -> H1<H, B>,
+                          ga: Applicative<G>, ha: Applicative<H>):
+            Pair<H1<G, H1<F, B>>, H1<H, H1<F, B>>> {
+        data class HTypePair<T>(val g: H1<G, T>, val h: H1<H,T>) : H1<Pair<G, H>, T>
+
+        @Suppress("UNCHECKED_CAST")
+        fun <T> narrow(value: H1<Pair<G, H>, T>): HTypePair<T> = value as HTypePair<T>
+
+        val pair = narrow(traverse(fa, { a -> HTypePair(f(a), g(a)) }, ga.product(ha)))
+        return pair.g to pair.h
+    }
+
+    fun <G> compose(g: Traverse<G>): Traverse<H1<F, G>> {
+        val FGtype = HTypeFG<F,G>()
+
+        return object : Traverse<H1<F, G>> {
+            override fun <T, App : Applicative<T>, A, B> traverse(
+                    fa: H1<H1<F, G>, A>,
+                    f: (A) -> H1<T, B>,
+                    apply: App): H1<T, H1<H1<F, G>, B>> =
+                    apply.map(this@Traverse.traverse(FGtype.narrow(fa).f, { ga: H1<G, A> -> g.traverse(ga, f, apply) }, apply))
+                    { FGtype.HTypeFG(it) }
+        }
+    }
 }
 
 data class HTypeConst<A, B>(val a: A) : H1<ConstU<A>, B>
@@ -295,6 +380,7 @@ class ConstU<A>
 
 fun <A, B> narrow(value: H1<ConstU<A>, B>): HTypeConst<A, B> = value as HTypeConst<A, B>
 
+//将一个Monoid转变成一个Applicative
 fun <M> monoidApplicative(m: Monoid<M>) =
         object : Applicative<ConstU<M>> {
             override fun <A> unit(a: () -> A): H1<ConstU<M>, A> = HTypeConst(m.zero())

@@ -1,6 +1,7 @@
 package monad
 
 import applicative.Applicative
+import applicative.Traverse
 import applicative.curry
 import fj.F
 import fj.F2
@@ -21,6 +22,18 @@ interface H1<X, T>
 
 interface H2<X, Y, T> : H1<X, H1<Y, T>>
 
+class HTypeFG<F, G> {
+    inner class HTypeFG<T>(val f: H1<F, H1<G, T>>) : H1<H1<F, G>, T>
+
+    fun <T> narrow(value: H1<H1<F, G>, T>): HTypeFG<T> = value as HTypeFG<T>
+}
+
+class HTypePairFG<F, G> {
+    inner class PairFG<T>(val f: H1<F, T>, val g: H1<G, T>) : H1<Pair<F, G>, T>
+
+    fun <T> narrow(value: H1<Pair<F, G>, T>): PairFG<T> = value as PairFG<T>
+}
+
 interface Functor<F> {
     fun <A, B> map(fa: H1<F, A>, f: (A) -> B): H1<F, B>
 }
@@ -30,7 +43,7 @@ infix fun <T> T.cons(l: List<T>): List<T> = List.cons(this, l)
 interface Monad<F> : Applicative<F>, Functor<F> {
     override fun <A> unit(a: () -> A): H1<F, A>
 
-    fun <A, B> flatMap(fa: H1<F, A>, f: (A) -> H1<F, B>): H1<F, B>
+    fun <A, B> flatMap(gha: H1<F, A>, f: (A) -> H1<F, B>): H1<F, B>
 
     override fun <A> unit(a: A): H1<F, A> = unit { a }
 
@@ -74,6 +87,21 @@ interface Monad<F> : Applicative<F>, Functor<F> {
     fun <A, B> __flatMap(ma: H1<F, A>, f: (A) -> H1<F, B>): H1<F, B> = join(map(ma, f))
 }
 
+// Monad composition
+fun <G, H> composeM(g: Monad<G>, h: Monad<H>, t: Traverse<H>): Monad<H1<G, H>> {
+    val htypeFG = HTypeFG<G, H>()
+    return object : Monad<H1<G, H>> {
+        override fun <A> unit(a: () -> A): H1<H1<G, H>, A> = htypeFG.HTypeFG(g.unit(h.unit(a)))
+
+        override fun <A, B> flatMap(gha: H1<H1<G, H>, A>, f: (A) -> H1<H1<G, H>, B>): H1<H1<G, H>, B> =
+                htypeFG.HTypeFG(
+                        g.flatMap(htypeFG.narrow(gha).f,
+                                { ha: H1<H, A> -> g.map(t.traverse(ha, { htypeFG.narrow(f(it)).f }, g), { h.join(it) }) }
+                        )
+                )
+    }
+}
+
 //monad flatMap组合子的结合律(associative)法则
 fun <M, A, B, C> monadFlatmapAssociativeLaw(gen: Gen<A>, fGen: Gen<F<A, B>>, gGen: Gen<F<B, C>>, m: Monad<M>): Property {
     val flatFGen: Gen<(A) -> H1<M, B>> = liftGenF(fGen, m)
@@ -105,6 +133,10 @@ data class HTypeList<T>(val l: List<T>) : H1<ListU, T>
 
 object ListU
 
+fun <T> List<T>.toHType(): H1<ListU, T> = HTypeList(this)
+
+fun <T> H1<ListU, T>.toOri(): List<T> = narrow(this).l
+
 fun <A> narrow(value: H1<ListU, A>): HTypeList<A> {
     return value as HTypeList<A>
 }
@@ -113,8 +145,8 @@ val listMonad = object : Monad<ListU> {
     override fun <A> unit(a: () -> A): H1<ListU, A> =
             HTypeList(List.single(a()))
 
-    override fun <A, B> flatMap(fa: H1<ListU, A>, f: (A) -> H1<ListU, B>): H1<ListU, B> =
-            HTypeList(narrow(fa).l.bind { narrow(f(it)).l })
+    override fun <A, B> flatMap(gha: H1<ListU, A>, f: (A) -> H1<ListU, B>): H1<ListU, B> =
+            HTypeList(narrow(gha).l.bind { narrow(f(it)).l })
 }
 
 
@@ -122,6 +154,10 @@ val listMonad = object : Monad<ListU> {
 data class HTypeOption<T>(val l: Option<T>) : H1<OptionU, T>
 
 object OptionU
+
+fun <T> Option<T>.toHType(): H1<OptionU, T> = HTypeOption(this)
+
+fun <T> H1<OptionU, T>.toOri(): Option<T> = narrow(this).l
 
 fun <A> narrow(value: H1<OptionU, A>): HTypeOption<A> {
     return value as HTypeOption<A>
@@ -131,8 +167,8 @@ val optionMonad = object : Monad<OptionU> {
     override fun <A> unit(a: () -> A): H1<OptionU, A> =
             HTypeOption(Option.fromNull(a()))
 
-    override fun <A, B> flatMap(fa: H1<OptionU, A>, f: (A) -> H1<OptionU, B>): H1<OptionU, B> =
-            HTypeOption(narrow(fa).l.bind { narrow(f(it)).l })
+    override fun <A, B> flatMap(gha: H1<OptionU, A>, f: (A) -> H1<OptionU, B>): H1<OptionU, B> =
+            HTypeOption(narrow(gha).l.bind { narrow(f(it)).l })
 }
 
 
@@ -153,9 +189,9 @@ class StateMonads<S> {
     val monad = object : Monad<StateU> {
         override fun <A> unit(a: () -> A): H1<StateU, A> = MonadState(State { a() to it })
 
-        override fun <A, B> flatMap(fa: H1<StateU, A>, f: (A) -> H1<StateU, B>): H1<StateU, B> =
+        override fun <A, B> flatMap(gha: H1<StateU, A>, f: (A) -> H1<StateU, B>): H1<StateU, B> =
                 MonadState(State { s ->
-                    val (a, sa) = narrow(fa).s.run(s)
+                    val (a, sa) = narrow(gha).s.run(s)
                     narrow(f(a)).s.run(sa)
                 })
     }
@@ -178,9 +214,9 @@ class ReaderMonads<R> {
     val monad = object : Monad<ReaderU> {
         override fun <A> unit(a: () -> A): H1<ReaderU, A> = MonadReader(Reader { a() })
 
-        override fun <A, B> flatMap(fa: H1<ReaderU, A>, f: (A) -> H1<ReaderU, B>): H1<ReaderU, B> =
+        override fun <A, B> flatMap(gha: H1<ReaderU, A>, f: (A) -> H1<ReaderU, B>): H1<ReaderU, B> =
                 MonadReader(Reader { r ->
-                    val a = narrow(fa).r.run(r)
+                    val a = narrow(gha).r.run(r)
                     narrow(f(a)).r.run(r)
                 })
     }
@@ -203,12 +239,12 @@ fun <L> EitherType<L>.eitherMonad(): Monad<EitherType.EitherU> =
         object : Monad<EitherType.EitherU> {
             override fun <A> unit(a: () -> A): H1<EitherType.EitherU, A> = HTypeEither(Either.right(a()))
 
-            override fun <A, B> flatMap(fa: H1<EitherType.EitherU, A>, f: (A) -> H1<EitherType.EitherU, B>): H1<EitherType.EitherU, B> =
+            override fun <A, B> flatMap(gha: H1<EitherType.EitherU, A>, f: (A) -> H1<EitherType.EitherU, B>): H1<EitherType.EitherU, B> =
                     HTypeEither(
                             Either.joinRight(
                                     Either.rightMap_<L, A, Either<L, B>>()
                                             .f({ a: A -> narrow(f(a)).r}.toF())
-                                            .f(narrow(fa).r)))
+                                            .f(narrow(gha).r)))
         }
 
 
