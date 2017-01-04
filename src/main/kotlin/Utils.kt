@@ -9,3 +9,8 @@ fun Regex.findPrefixOf(source: CharSequence): String? {
     else
         null
 }
+
+fun <A, B, C> A.safeAs(success: (B) -> C, fail: C): C {
+    val result: B? = this as? B
+    return result?.let(success) ?: fail
+}

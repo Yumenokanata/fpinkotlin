@@ -7,18 +7,31 @@ import fj.Show
 import fj.data.List
 import fj.test.Arbitrary
 import fj.test.Rand
+import monad.H1
 import java.util.concurrent.*
 
 /**
  * Created by yume on 16-12-25.
  */
 
-typealias Par<A> = (ExecutorService) -> Future<A>
+interface Par<A> : (ExecutorService) -> Future<A>, H1<ParU, A>
+
+fun <A> Par(handler: (ExecutorService) -> Future<A>): Par<A> =
+        object : Par<A> {
+            override fun invoke(es: ExecutorService): Future<A> = handler(es)
+        }
+
+object ParU
+
+fun <A> narrow(value: H1<ParU, A>): Par<A> = value as Par<A>
+
+fun <A> H1<ParU, A>.toOri(): Par<A> = narrow(this)
+
 
 object Parallel {
     fun <A> run(es: ExecutorService, a: Par<A>): Future<A> = a(es)
 
-    fun <A> unit(a: A): Par<A> = { UnitFuture(a) }
+    fun <A> unit(a: A): Par<A> = Par { UnitFuture(a) }
 
     private data class UnitFuture<A>(val a: A) : Future<A> {
         override fun isDone() = true
@@ -33,14 +46,14 @@ object Parallel {
     }
 
     fun <A, B, C> map2(a: Par<A>, b: Par<B>, f: (A, B) -> C): Par<C> =
-            { es ->
+            Par { es ->
                 val af = a(es)
                 val bf = b(es)
                 UnitFuture(f(af.get(), bf.get()))
             }
 
     fun <A> fork(a: () -> Par<A>): Par<A> =
-            { es ->
+            Par { es ->
                 es.submit(object : Callable<A> {
                     override fun call(): A = a()(es).get()
                 })
@@ -50,7 +63,7 @@ object Parallel {
 
     fun <A, B> asyncF(f: (A) -> B): (A) -> Par<B> = { a -> lazyUnit { f(a) } }
 
-    fun <A, B> Par<A>.map(f: (A) -> B): Par<B> = { es -> UnitFuture(f(this(es).get())) }
+    fun <A, B> Par<A>.map(f: (A) -> B): Par<B> = Par { es -> UnitFuture(f(this(es).get())) }
 
     fun sortPar(parList: Par<List<Int>>) = parList.map { it.sorted() }
 
@@ -83,34 +96,34 @@ object Parallel {
             p(e).get() == p2(e).get()
 
     fun <A> delay(fa: () -> Par<A>): Par<A> =
-            { fa()(it) }
+            Par { fa()(it) }
 
     fun <A> choice(cond: Par<Boolean>, t: Par<A>, f: Par<A>): Par<A> =
-            { es ->
+            Par { es ->
                 if(run(es, cond).get()) t(es)
                 else f(es)
             }
 
     fun <A> Par<Int>.choiceN(choices: List<Par<A>>): Par<A> =
-            { es -> run(es, choices.index(run(es, this).get())) }
+            Par { es -> run(es, choices.index(run(es, this).get())) }
 
     fun <A> Par<Boolean>.choiceViaChoiceN(ifTrue: Par<A>, ifFalse: Par<A>): Par<A> =
             map { if(it) 0 else 1 }.choiceN(List.list(ifTrue, ifFalse))
 
     fun <K, V> Par<K>.choiceMap(choices: Map<K, Par<V>>): Par<V> =
-            { es ->
+            Par { es ->
                 val key = run(es, this).get()
                 run(es, choices.get(key)!!)
             }
 
     fun <A, B> Par<A>.chooser(choices: (A) -> Par<B>): Par<B> =
-            { es ->
+            Par { es ->
                 val k = run(es, this).get()
                 run(es, choices(k))
             }
 
     fun <A, B> Par<A>.flatMap(f: (A) -> Par<B>): Par<B> =
-            { es ->
+            Par { es ->
                 val k = run(es, this).get()
                 run(es, f(k))
             }
@@ -122,7 +135,7 @@ object Parallel {
             flatMap { choices.index(it) }
 
     fun <A> join(a: Par<Par<A>>): Par<A> =
-            { es -> run(es, run(es, a).get()) }
+            Par { es -> run(es, run(es, a).get()) }
 
     fun <A> joinViaFlatMap(a: Par<Par<A>>): Par<A> =
             a.flatMap { it }

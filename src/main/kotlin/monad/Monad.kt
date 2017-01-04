@@ -85,6 +85,45 @@ interface Monad<F> : Applicative<F>, Functor<F> {
 
     //使用join和map实现flatMap的练习，此时基本组合子为join、map和unit
     fun <A, B> __flatMap(ma: H1<F, A>, f: (A) -> H1<F, B>): H1<F, B> = join(map(ma, f))
+
+    fun <A> skip(a: H1<F, A>): H1<F, Unit> = as_(a, Unit)
+
+    fun <A, B> as_(a: H1<F, A>, b: B): H1<F, B> = map(a) { b }
+
+    fun <A> when_(b: Boolean, fa: () -> H1<F, A>): H1<F, Boolean> =
+        if(b) as_(fa(), true) else unit(false)
+
+    fun while_(ma: H1<F, Boolean>, b: H1<F, Unit>): H1<F, Unit> =
+            flatMap(ma) { a -> skip(when_(a, { while_(ma, b) })) }
+
+    //只有cond函数返回true，一直循环重复第一个参数的作用
+    fun <A> doWhile(ma: H1<F, A>, cond: (A) -> H1<F, Boolean>): H1<F, Unit> =
+            flatMap(ma) { a ->
+                flatMap(cond(a)) { ok ->
+                    if(ok)
+                        doWhile(ma, cond)
+                    else
+                        unit(Unit)
+                }
+            }
+
+    //无限重复参数的作用
+    fun <A, B> forever(ma: H1<F, A>): H1<F, B> = flatMap(ma) { forever<A, B>(ma) }
+
+    //使用函数f折叠流，组合作用并返回结果
+    fun <A, B> foldM(l: Stream<A>, z: B, f: (B, A) -> H1<F, B>): H1<F, B> =
+            when {
+                l.isNotEmpty -> flatMap(f(z, l.head()), { z2 -> foldM(l.tail()._1(), z2, f) })
+                else -> unit(z)
+            }
+
+    //同foldM一致，除了不返回结果
+    fun <A, B> foldM_(l: Stream<A>, z: B, f: (B, A) -> H1<F, B>): H1<F, Unit> =
+        skip(foldM(l, z, f))
+
+    //对流中每个元素调用函数f并组合作用
+    fun <A> foreachM(l: Stream<A>, f: (A) -> H1<F, Unit>): H1<F, Unit> =
+            foldM_(l, Unit) { _, a -> f(a) }
 }
 
 // Monad composition
