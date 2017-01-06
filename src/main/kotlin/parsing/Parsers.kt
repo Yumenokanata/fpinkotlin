@@ -1,5 +1,6 @@
 package parsing
 
+import fj.Ord
 import fj.data.Either
 import fj.data.List
 import fj.data.Option
@@ -14,7 +15,7 @@ import java.util.regex.Pattern
  * Created by yume on 16-12-21.
  */
 
-typealias Parser<T> = (Location) -> Result<out T>
+typealias Parser<T> = (ParseState) -> Result<out T>
 
 sealed class Result<T> {
     data class Success<A>(val a: A, val length: Int) : Result<A>()
@@ -169,7 +170,7 @@ interface Parsers {
 
     /** A parser that succeeds when given empty input. */
     fun eof(): Parser<String> =
-            label("unexpected trailing characters", "\\z".r())
+            label("unexpected trailing characters", "\\Z".r())
 
     /** The root of the grammar, expects no further input following `p`. */
     fun <A> root(p: Parser<A>): Parser<A> =
@@ -177,9 +178,9 @@ interface Parsers {
 }
 
 data class Location(val input: String, val offset: Int = 0) {
-    val line = lazy { input.slice(0..offset + 1).count({ it == '\n' }) }
-    val col = lazy {
-        val lineStart = input.slice(0..offset + 1).lastIndexOf('\n')
+    val line by lazy { input.slice(0..offset).count({ it == '\n' }) + 1 }
+    val col by lazy {
+        val lineStart = input.slice(0..offset).lastIndexOf('\n')
         when(lineStart) {
             -1 -> offset + 1
             else -> offset - lineStart
@@ -189,6 +190,28 @@ data class Location(val input: String, val offset: Int = 0) {
     fun toError(msg: String): ParseError = ParseError(List.single(Pair(this, msg)))
 
     fun advanceBy(n: Int): Location = copy(offset = offset + n)
+
+    fun currentLine(): String =
+            if (input.length > 1) input.lines().drop(line - 1).first()
+            else ""
+
+    fun columnCaret() = " ".repeat(col - 1) + "^"
+}
+
+fun String.slice(from: Int, until: Int): String {
+    val start = if (from < 0) 0 else from
+    if (until <= start || start >= this.length)
+        return ""
+
+    val end = if (until > length) length else until
+    return this.substring(start, end)
+}
+
+data class ParseState(val loc: Location) {
+    fun advanceBy(numChars: Int): ParseState =
+            copy(loc = loc.copy(offset = loc.offset + numChars))
+    val input: String = loc.input.substring(loc.offset)
+    fun slice(n: Int) = loc.input.substring(loc.offset, loc.offset + n)
 }
 
 data class ParseError(val stack: List<Pair<Location, String>>) {
@@ -203,4 +226,41 @@ data class ParseError(val stack: List<Pair<Location, String>>) {
 
     fun latest(): Pair<Location, String>? =
             stack.lastOrNull()
+
+    /**
+    Display collapsed error stack - any adjacent stack elements with the
+    same location are combined on one line. For the bottommost error, we
+    display the full line, with a caret pointing to the column of the error.
+    Example:
+
+    1.1 file 'companies.json'; array
+    5.1 object
+    5.2 key-value
+    5.10 ':'
+
+    { "MSFT" ; 24,
+     */
+    override fun toString() =
+            if (stack.isEmpty) "no error message"
+            else {
+                val collapsed = collapseStack(stack)
+                val context = collapsed.lastOption.map { "\n\n" + it.first.currentLine() }.orSome("") +
+                        collapsed.lastOption.map { "\n" + it.first.columnCaret() }.orSome("")
+                collapsed.map { (loc, msg) -> loc.line.toString() + "." + loc.col + " " + msg }.joinToString("\n") +
+                        context
+            }
+
+    /* Builds a collapsed version of the given error stack -
+     * messages at the same location have their messages merged,
+     * separated by semicolons */
+    fun collapseStack(s: List<Pair<Location, String>>): List<Pair<Location, String>> =
+            s.groupBy { it.first }
+                    .map { it.map { it.second }.joinToString(separator = "; ") }
+                    .toList().sort(Ord.p2Ord1(Ord.intOrd.contramap { it.offset }))
+                    .map { it._1() to it._2() }
+
+    fun formatLoc(l: Location): String = l.line.toString() + "." + l.col
 }
+
+val <A> List<A>.lastOption: Option<A>
+        get() = Option.fromNull(this.last())

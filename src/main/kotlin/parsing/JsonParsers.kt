@@ -4,6 +4,8 @@ import findPrefixOf
 import parsing.JsonExample.jsonTxt
 import fj.data.Either
 import fj.data.List
+import parsing.JsonExample.malformedJson1
+import parsing.JsonExample.malformedJson2
 
 /**
  * Created by yume on 16-12-21.
@@ -18,60 +20,30 @@ sealed class JSON {
     data class JObject(val map: Map<String, JSON>) : JSON()
 
     companion object {
+        fun Parsers.tok(s: String): Parser<String> = run { token(string(s)) }
+
         fun jsonParser(p: Parsers): Parser<JSON> = p.run { root(skipL(whitespace(), { obj() or array() })) }
 
-        fun Parsers.array(): Parser<JSON> = scope("array", surround(string("["), string("]")) {
-            sep(value(), string(",")).map { vs -> JArray(vs) }
+        fun Parsers.array(): Parser<JSON> = scope("array", surround(tok("["), tok("]")) {
+            sep(value(), tok(",")).map { vs -> JArray(vs) }
         })
 
-        fun Parsers.obj(): Parser<JSON> = scope("object", surround(string("{"), string("}")) {
-            sep(keyval(), string(",")).map { kvs -> JObject(kvs.toMap()) }
+        fun Parsers.obj(): Parser<JSON> = scope("object", surround(tok("{"), tok("}")) {
+            sep(keyval(), tok(",")).map { kvs -> JObject(kvs.toMap()) }
         })
 
         fun Parsers.keyval(): Parser<Pair<String, JSON>> =
-                product(escapedQuoted(), { skipL(string(":"), { value() }) })
+                product(escapedQuoted(), { skipL(tok(":"), { value() }) })
 
         fun Parsers.lit(): Parser<JSON> = scope("literal",
-                string("null").cast(JNull) or
+                tok("null").cast(JNull) or
                         double().map { JNumber(it) } or
                         escapedQuoted().map { JString(it) } or
-                        string("true").cast(JBool(true)) or
-                        string("false").cast(JBool(false)))
+                        tok("true").cast(JBool(true)) or
+                        tok("false").cast(JBool(false)))
 
         fun Parsers.value(): Parser<JSON> = run { lit() or obj() or array() }
     }
-}
-
-fun Location.slice(n: Int) =
-        if(offset + n >= input.length)
-            input.substring(offset)
-        else
-            input.substring(offset..offset + n)
-
-object JsonExample {
-    val jsonTxt = """
-{
-  "Company name" : "Microsoft Corporation",
-  "Ticker"  : "MSFT",
-  "Active"  : true,
-  "Price"   : 30.66,
-  "Shares outstanding" : 8.38e9,
-  "Related companies" : [ "HPQ", "IBM", "YHOO", "DELL", "GOOG" ]
-}
-"""
-}
-
-fun <E, R> printResult(e: Either<E, R>) =
-        e.either({ println(it) }, { println(it) })
-
-fun main(args: Array<String>) {
-    val p = MyParsers()
-    val json: Parser<JSON> = JSON.jsonParser(p)
-    printResult(p.run { json.run(jsonTxt) })
-
-//    printResult(p.run { slice(string("a") or string("b")).many().run("aaba") })
-
-//    printResult(p.run { quoted().run("a\"ab\"a") })
 }
 
 class MyParsers : Parsers {
@@ -86,7 +58,7 @@ class MyParsers : Parsers {
     }
 
     override fun <T> Parser<T>.run(input: String): Either<ParseError, T> {
-        val result = this(Location(input))
+        val result = this(ParseState(Location(input)))
         return when(result) {
             is Result.Success -> Either.right(result.a)
             is Result.Failure -> Either.left(result.error)
@@ -94,13 +66,13 @@ class MyParsers : Parsers {
     }
 
     override fun string(w: String): Parser<String> =
-            { location ->
+            { state ->
                 val msg = "'" + w + "'"
-                val i = firstNonmatchingIndex(location.input, w, location.offset)
+                val i = firstNonmatchingIndex(state.loc.input, w, state.loc.offset)
                 if (i == -1) // they matched
                     Result.Success(w, w.length)
                 else
-                    Result.Failure(location.advanceBy(i).toError(msg), i != 0)
+                    Result.Failure(state.loc.advanceBy(i).toError(msg), i != 0)
             }
 
     override fun <A> Parser<A>.or(p2: Parser<A>): Parser<A> =
@@ -136,21 +108,64 @@ class MyParsers : Parsers {
             }
 
     override fun regex(r: Regex): Parser<String> =
-            { location ->
-                val match = r.findPrefixOf(location.input.substring(location.offset))
+            { state ->
+                val match = r.findPrefixOf(state.input)
                 if (match != null)
                     Result.Success(match, match.length)
                 else
-                    Result.Failure(Location(location.input).toError("Expected: " + r), false)
+                    Result.Failure(state.loc.toError("Expected: " + r), false)
             }
 
     override fun <A> label(msg: String, p: Parser<A>): Parser<A> =
             { s -> p(s).mapError { it.label(msg) } }
 
     override fun <A> scope(msg: String, p: Parser<A>): Parser<A> =
-            { s -> p(s).mapError { it.push(s, msg) } }
+            { s -> p(s).mapError { it.push(s.loc, msg) } }
 
     override fun <A> attempt(p: Parser<A>): Parser<A> =
             { s -> p(s).uncommit() }
+}
+
+
+object JsonExample {
+    val jsonTxt = """
+{
+  "Company name" : "Microsoft Corporation",
+  "Ticker"  : "MSFT",
+  "Active"  : true,
+  "Price"   : 30.66,
+  "Shares outstanding" : 8.38e9,
+  "Related companies" : [ "HPQ", "IBM", "YHOO", "DELL", "GOOG" ]
+}
+"""
+
+    val malformedJson1 = """
+{
+  "Company name" ; "Microsoft Corporation"
+}
+"""
+
+    val malformedJson2 = """
+[
+  [ "HPQ", "IBM",
+  "YHOO", "DELL" ++
+  "GOOG"
+  ]
+]
+"""
+}
+
+fun <E, R> printResult(e: Either<E, R>) =
+        e.either({ println(it) }, { println(it) })
+
+fun main(args: Array<String>) {
+    val p = MyParsers()
+    val json: Parser<JSON> = JSON.jsonParser(p)
+    printResult(p.run { json.run(jsonTxt) })
+    printResult(p.run { json.run(jsonTxt) } )
+    println("--")
+    printResult(p.run { json.run(malformedJson1) } )
+    println("--")
+    printResult(p.run { json.run(malformedJson2) } )
 }
 
