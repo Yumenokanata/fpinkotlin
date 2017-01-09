@@ -1,3 +1,7 @@
+
+import java.util.*
+import java.util.Collections.emptyList
+
 /**
  * Created by yume on 16-12-23.
  */
@@ -34,4 +38,17 @@ fun <T, U> copyOf(a: Array<U>, from: Int, len: Int, newType: Class<Array<T>>): A
 
 fun <T> copyOf(a: Array<T>, from: Int, len: Int = a.size - from): Array<T> {
     return copyOf<T, T>(a, from, len, a.javaClass)
+}
+
+val <A> MutableList<A>.head: A
+    get() = first()
+
+val <A> MutableList<A>.tail: MutableList<A>
+    get() = rest(this)
+
+fun <E, L : List<E>> rest(list: L): L {
+    if (list.isEmpty())
+        return list
+
+    return list.subList(1, list.size) as L
 }
