@@ -7,9 +7,10 @@
 但同网上其他以Java实现的函数式库一样，由于类型系统的问题没有抽象出Monad等高阶结构。  
 
 项目会根据自己的学习进度逐步完善，目前已实现《Scala函数式编程》中的：  
- 1. 第一部分 5. [严格求值和惰性求值](https://github.com/Yumenokanata/fpinkotlin/blob/master/src/parsing.main/kotlin/laziness)
- 1. 第二部分 7. [纯函数式的并行计算库](https://github.com/Yumenokanata/fpinkotlin/blob/master/src/parsing.main/kotlin/parallelism/Par.kt)
- 2. 第二部分 9. [语法分析组合子(示例的JSON解析器以及错误提示已完成)](https://github.com/Yumenokanata/fpinkotlin/blob/master/src/parsing.main/kotlin/parsing.Parsers.kt)
- 3. 第三部分 10.[Monoid](https://github.com/Yumenokanata/fpinkotlin/blob/master/src/parsing.main/kotlin/monoid/Monoid.kt)
- 4. 第三部分 11.[Monad](https://github.com/Yumenokanata/fpinkotlin/blob/master/src/parsing.main/kotlin/monad/Monad.kt)
- 5. 第三部分 12.[可应用和可遍历函子（带注释）](https://github.com/Yumenokanata/fpinkotlin/blob/master/src/parsing.main/kotlin/applicative/Applicative.kt)
+ 1. 第一部分 3. [函数式数据结构(List)](https://github.com/Yumenokanata/fpinkotlin/blob/master/src/parsing.main/kotlin/datastructures)
+ 2. 第一部分 5. [严格求值和惰性求值](https://github.com/Yumenokanata/fpinkotlin/blob/master/src/parsing.main/kotlin/laziness)
+ 3. 第二部分 7. [纯函数式的并行计算库](https://github.com/Yumenokanata/fpinkotlin/blob/master/src/parsing.main/kotlin/parallelism/Par.kt)
+ 4. 第二部分 9. [语法分析组合子(示例的JSON解析器以及错误提示已完成)](https://github.com/Yumenokanata/fpinkotlin/blob/master/src/parsing.main/kotlin/parsing.Parsers.kt)
+ 5. 第三部分 10.[Monoid](https://github.com/Yumenokanata/fpinkotlin/blob/master/src/parsing.main/kotlin/monoid/Monoid.kt)
+ 6. 第三部分 11.[Monad](https://github.com/Yumenokanata/fpinkotlin/blob/master/src/parsing.main/kotlin/monad/Monad.kt)
+ 7. 第三部分 12.[可应用和可遍历函子（带注释）](https://github.com/Yumenokanata/fpinkotlin/blob/master/src/parsing.main/kotlin/applicative/Applicative.kt)
