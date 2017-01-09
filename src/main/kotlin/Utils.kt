@@ -14,3 +14,24 @@ fun <A, B, C> A.safeAs(success: (B) -> C, fail: C): C {
     val result: B? = this as? B
     return result?.let(success) ?: fail
 }
+
+val <A> Array<out A>.head: A
+    get() = first()
+
+val <A> Array<A>.tail: Array<A>
+    get() = copyOf(this, 1)
+
+@SuppressWarnings("SuspiciousSystemArraycopy", "unchecked", "ObjectEquality", "RedundantCast")
+fun <T, U> copyOf(a: Array<U>, from: Int, len: Int, newType: Class<Array<T>>): Array<T> {
+    val copy = if (newType as Any === Array<Any>::class.java)
+        arrayOfNulls<Any>(len) as Array<T>
+    else
+        java.lang.reflect.Array.newInstance(newType.componentType, len) as Array<T>
+    System.arraycopy(a, from, copy, 0,
+            Integer.min(a.size, len))
+    return copy
+}
+
+fun <T> copyOf(a: Array<T>, from: Int, len: Int = a.size - from): Array<T> {
+    return copyOf<T, T>(a, from, len, a.javaClass)
+}
