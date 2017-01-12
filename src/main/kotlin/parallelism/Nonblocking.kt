@@ -1,10 +1,11 @@
 package parallelism
 
-import fj.data.Either
-import fj.data.List
-import fj.data.Option
+import datastructures.cons
+import datastructures.List
+import datastructures.List.Companion.append
+import errorhanding.Either
+import errorhanding.Option
 import monad.H1
-import monad.cons
 import parallelism.Nonblocking.Par
 import java.util.concurrent.Callable
 import java.util.concurrent.CountDownLatch
@@ -88,14 +89,17 @@ object Nonblocking {
                     val combiner = Actor.apply<Either<A, B>>(es, { eab ->
                         when {
                             eab == null -> {}
-                            eab.isLeft -> if(br.isSome) eval(es){ (cb(f(eab.left().value(), br.some()))) }
-                            else ar = Option.some(eab.left().value())
-                            eab.isRight -> if(br.isSome) eval(es){ (cb(f(ar.some(), eab.right().value()))) }
-                            else br = Option.some(eab.right().value())
+                            eab is Either.Left ->
+                                if(br is Option.Some) eval(es)
+                                { (cb(f(eab.get, (br as Option.Some<B>).get))) }
+                                else ar = Option.Some(eab.get)
+                            eab is Either.Right ->
+                                if(ar is Option.Some) eval(es){ (cb(f((ar as Option.Some<A>).get, eab.get))) }
+                                else br = Option.Some(eab.get)
                         }
                     })
-                    p(es)({ a -> combiner(Either.left(a)) })
-                    p2(es)({ b -> combiner(Either.right(b)) })
+                    p(es)({ a -> combiner(Either.Left(a)) })
+                    p2(es)({ b -> combiner(Either.Right(b)) })
                 }
             }
         }
@@ -116,17 +120,17 @@ object Nonblocking {
 
         fun <A> sequenceRight(ls: List<Par<A>>): Par<List<A>> =
             when {
-                ls.isEmpty -> unit(List.nil())
-                else -> map2(ls.head(), fork { sequence(ls.tail()) }) { h, l -> h cons l }
+                ls is List.Nil -> unit(List.Nil)
+                else -> map2(ls.head, fork { sequence(ls.tail) }) { h, l -> h cons l }
             }
 
         fun <A> sequence(ls: List<Par<A>>): Par<List<A>> = fork {
             when {
-                ls.isEmpty -> unit(List.nil())
-                ls.isSingle -> map(ls.head()) { List.single(it) }
+                ls.isEmpty -> unit(List.nil<A>())
+                ls.isSingle -> map(ls.head) { List.apply(it) }
                 else -> {
                     val p = ls.splitAt(ls.length() / 2)
-                    map2(sequence(p._1()), sequence(p._2())) { l, r -> l.append(r) }
+                    map2(sequence(p.first), sequence(p.second)) { l, r -> l.append(r) }
                 }
             }
         }
@@ -169,7 +173,7 @@ object Nonblocking {
         }
 
         fun <A> choiceViaChoiceN(a: Par<Boolean>, ifTrue: Par<A>, ifFalse: Par<A>): Par<A> =
-                choiceN(map(a){ b -> if (b) 0 else 1 }, List.list(ifTrue, ifFalse))
+                choiceN(map(a){ b -> if (b) 0 else 1 }, List.apply(ifTrue, ifFalse))
 
         fun <K, V> choiceMap(p: Par<K>, ps: Map<K, Par<V>>): Par<V> = Par { es ->
             object : Future<V> {

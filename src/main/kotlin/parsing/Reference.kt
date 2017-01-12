@@ -1,7 +1,7 @@
 package parsing
 
+import errorhanding.Either
 import findPrefixOf
-import fj.data.Either
 
 /**
  * Created by yume on 17-1-4.

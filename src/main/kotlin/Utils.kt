@@ -1,6 +1,5 @@
 
-import java.util.*
-import java.util.Collections.emptyList
+import java.lang.System.arraycopy
 
 /**
  * Created by yume on 16-12-23.
@@ -40,13 +39,23 @@ fun <T> copyOf(a: Array<T>, from: Int, len: Int = a.size - from): Array<T> {
     return copyOf<T, T>(a, from, len, a.javaClass)
 }
 
-val <A> MutableList<A>.head: A
+fun copyOfRange(a: CharArray, from: Int, to: Int): CharArray {
+    val len = to - from
+    if (len < 0)
+        throw IllegalArgumentException(from.toString() + " > " + to)
+    val copy = CharArray(len)
+    arraycopy(a, from, copy, 0,
+            Integer.min(a.size - from, len))
+    return copy
+}
+
+val <A> kotlin.collections.List<A>.head: A
     get() = first()
 
-val <A> MutableList<A>.tail: MutableList<A>
+val <A> kotlin.collections.List<A>.tail: kotlin.collections.List<A>
     get() = rest(this)
 
-fun <E, L : List<E>> rest(list: L): L {
+fun <E, L : kotlin.collections.List<E>> rest(list: L): L {
     if (list.isEmpty())
         return list
 

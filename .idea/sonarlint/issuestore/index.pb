@@ -46,3 +46,31 @@ N
 gradlew.bat,2/a/2a45a911a8f1836b0b6c5b758962572012d8f8c3
 Z
 *src/main/kotlin/applicative/Applicative.kt,c/4/c42e32faac07c9e2d2a4d73141fb328bc972b599
+Q
+!src/test/kotlin/iomonad/IOTest.kt,2/2/22bd2d3fb6220d86040a7438f8baa84a49972391
+N
+src/test/kotlin/par/ParTest.kt,1/2/124bdd893b694bbb202c6609ba0ee4c64f12a658
+9
+	README.md,8/e/8ec9a00bfd09b3190ac6b22251dbb1aa95a0579d
+R
+"src/main/kotlin/parsing/Parsers.kt,8/4/846589386fe0ce0ede45ecf41be4e8f521a68a5d
+T
+$src/main/kotlin/parsing/Reference.kt,b/b/bb4d18695c73b2d6fbe9fe22a953f631c9cc6b6f
+U
+%src/main/kotlin/parsing/XmlParsers.kt,b/3/b31f10f113102c7dfb10056d5232e6fdd495bf40
+V
+&src/main/kotlin/parsing/JsonParsers.kt,d/3/d35c180591fb2f3fdcda6cfc7137d71a2dbb499a
+\
+,src/main/kotlin/localeffects/LocalEffects.kt,9/7/97367451495d896d19be5c46a322e98edf4b303d
+N
+src/main/kotlin/iomonad/IOF.kt,2/8/2852c5fb5b64634bc914a4e4d65805a89d1ec6c3
+O
+src/test/kotlin/iomonad/Test.kt,2/f/2fad268ed8529366c1b0ff8a6cc9cb30d3cd71eb
+V
+&src/test/kotlin/laziness/StreamTest.kt,7/8/786b4deedfdb7f0a6118062e6a2c37869dcb9288
+R
+"src/main/kotlin/laziness/Stream.kt,2/1/213b20590b78c774b70aad0e7c9d23917df9d7e0
+V
+&src/main/kotlin/errorhanding/Option.kt,4/1/41a08562457ad89bab205fedd110b4d07a616ecc
+V
+&src/main/kotlin/datastructures/List.kt,e/2/e2a2a2de6777bff4d2420abe2405e6c6977f0d39

@@ -1,19 +1,167 @@
 package datastructures
 
 import head
+import monad.H1
 import tail
 import java.util.*
-import kotlin.collections.ArrayList
 
 // `List` data type, parameterized on a type, `A`
-sealed class List<out A> {
+sealed class List<out A> : H1<List.T, A>, Iterable<A> {
+    object T
+
+    abstract val head: A
+    abstract val tail: List<A>
+
     object Nil : List<Nothing>() // A `List` data constructor representing the empty list
+    {
+        override val head: Nothing
+            get() = throw Error("head on empty list") //To change initializer of created properties use File | Settings | File Templates.
+        override val tail: List<Nothing>
+            get() = throw Error("tail on empty list") //To change initializer of created properties use File | Settings | File Templates.
+    }
+
     /* Another data constructor, representing nonempty lists. Note that `tail` is another `List<A>`,
     which may be `Nil` or another `Cons`.
      */
-    data class Cons<out A>(val head: A, val tail: List<A>) : List<A>()
+    data class Cons<out A>(override val head: A,
+                           override val tail: List<A>) : List<A>()
+
+    /*
+    A natural solution is using `foldRight`, but our implementation of `foldRight` is not stack-safe. We can
+    use `foldRightViaFoldLeft` to avoid the stack overflow (variation 1), but more commonly, with our current
+    implementation of `List`, `map` will just be implemented using local mutation (variation 2). Again, note that the
+    mutation isn't observable outside the function, since we're only mutating a buffer that we've allocated.
+    */
+    fun <B> map(f: (A) -> B): List<B> =
+            foldRight(Nil as List<B>) { h, t -> Cons(f(h), t) }
+
+    fun <B> map_1(f: (A) -> B): List<B> =
+            foldRightViaFoldLeft(this, Nil as List<B>) { h, t -> Cons(f(h),t) }
+
+    fun <B> map_2(f: (A) -> B): List<B> {
+        val buf = LinkedList<B>()
+        tailrec fun go(l: List<A>): Unit = when(l) {
+            is Nil -> Unit
+            is Cons -> {
+                buf += f(l.head)
+                go(l.tail)
+            }
+        }
+        go(this)
+        return fromList(buf) // converting from the standard Scala list to the list we've defined here
+    }
+
+    /**
+     * Returns the element at the given index if it exists, fails otherwise.
+
+     * @param i The index at which to get the element to return.
+     * *
+     * @return The element at the given index if it exists, fails otherwise.
+     */
+    fun index(i: Int): A {
+        if (i < 0 || i > length() - 1)
+            throw error("index " + i + " out of range on list with length " + length())
+        else {
+            var xs = this
+
+            for (c in 0..i - 1) xs = xs.tail
+
+            return xs.head
+        }
+    }
+
+    override fun iterator(): Iterator<A> = toCollection().iterator()
+
+    fun toCollection(): Collection<A> {
+        return object : AbstractCollection<A>() {
+            override val size: Int
+                get() = length()
+
+            override fun iterator(): MutableIterator<A> {
+                return object : MutableIterator<A> {
+                    override fun remove() =
+                        throw UnsupportedOperationException()
+
+                    private var xs = this@List
+
+                    override fun hasNext(): Boolean {
+                        return xs.isNotEmpty
+                    }
+
+                    override fun next(): A =
+                        when(xs) {
+                            is Nil -> throw NoSuchElementException()
+                            is Cons -> {
+                                val a = (xs as Cons).head
+                                xs = (xs as Cons).tail
+                                a
+                            }
+                        }
+                }
+            }
+        }
+    }
+
+    fun reverse(): List<A> = foldLeft(Nil as List<A>) { ls, a -> a cons ls }
+
+    val isSingle
+        get() = this is Cons && tail is Nil
+
+    val isEmpty
+        get() = this is Nil
+
+    val isNotEmpty
+        get() = !isEmpty
+
+    /*
+    No, this is not possible! The reason is because _before_ we ever call our function, `f`, we evaluate its argument,
+    which in the case of `foldRight` means traversing the list all the way to the end. We need _non-strict_ evaluation
+    to support early termination---we discuss this in chapter 5.
+    */
+
+    /*
+    We get back the original list! Why is that? As we mentioned earlier, one way of thinking about what `foldRight` "does"
+    is it replaces the `Nil` constructor of the list with the `z` argument, and it replaces the `Cons` constructor with
+    the given function, `f`. If we just supply `Nil` for `z` and `Cons` for `f`, then we get back the input list.
+
+    foldRight(Cons(1, Cons(2, Cons(3, Nil))), Nil:List<Int>)(Cons(_,_))
+    Cons(1, foldRight(Cons(2, Cons(3, Nil)), Nil:List<Int>)(Cons(_,_)))
+    Cons(1, Cons(2, foldRight(Cons(3, Nil), Nil:List<Int>)(Cons(_,_))))
+    Cons(1, Cons(2, Cons(3, foldRight(Nil, Nil:List<Int>)(Cons(_,_)))))
+    Cons(1, Cons(2, Cons(3, Nil)))
+    */
+
+    fun length(): Int = foldRight(0) { _, acc -> acc + 1 }
+
+    /**
+     * Splits this list into two lists at the given index. If the index goes out of bounds, then it is
+     * normalised so that this function never fails.
+
+     * @param i The index at which to split this list in two parts.
+     * *
+     * @return A pair of lists split at the given index of this list.
+     */
+    fun splitAt(i: Int): Pair<List<A>, List<A>> {
+        var c = 0
+        var first = List.nil<A>()
+        var second = nil<A>()
+        var xs = this
+        while (xs.isNotEmpty) {
+            val h = xs.head
+            if (c < i) {
+                first = h cons first
+            } else {
+                second = h cons second
+            }
+            c++
+            xs = xs.tail
+        }
+        return first.reverse() to second.reverse()
+    }
 
     companion object {// `List` companion object. Contains functions for creating and working with lists.
+        fun <A> nil(): List<A> = Nil
+
         fun sum(ints: List<Int>): Int = when(ints) { // A function that uses pattern matching to add up a list of integers
             is Nil -> 0 // The sum of the empty list is 0.
             is Cons -> ints.head + sum(ints.tail) // The sum of a list starting with `x` is `x` plus the sum of the rest of the list.
@@ -28,27 +176,46 @@ sealed class List<out A> {
                 if (args.isEmpty()) Nil
                 else Cons(args.head, apply(*args.tail))
 
-        fun <A> apply(args: MutableList<A>): List<A> = // Variadic function syntax
+        fun <A> fromList(args: kotlin.collections.List<A>): List<A> = // Variadic function syntax
                 if (args.isEmpty()) Nil
-                else Cons(args.head, apply(args.tail))
+                else Cons(args.head, fromList(args.tail))
 
-        fun <A> append(a1: List<A>, a2: List<A>): List<A> =
-                when(a1) {
-                    is Nil -> a2
-                    is Cons -> Cons(a1.head, append(a1.tail, a2))
-                }
+        fun fromString(s: String): List<Char> {
+            var cs = nil<Char>()
 
-        fun <A, B> foldRight(ls: List<A>, z: B, f: (A, B) -> B): B = // Utility functions
-                when(ls) {
+            for (i in s.length - 1 downTo 0)
+                cs = Cons(s[i], cs)
+
+            return cs
+        }
+
+        fun <A> iterableList(i: Iterable<A>): List<A> {
+            var ls: List<A> = Nil
+            for (a in i) {
+                ls = Cons(a, ls)
+            }
+            return ls
+        }
+
+        fun <A> replicate(n: Int, a: A): List<A> {
+            var list = nil<A>()
+            for (i in 0..n - 1) {
+                list = a cons list
+            }
+            return list
+        }
+
+        fun <A, B> List<A>.foldRight(z: B, f: (A, B) -> B): B = // Utility functions
+                when(this) {
                     is Nil -> z
-                    is Cons -> f(ls.head, foldRight(ls.tail, z, f))
+                    is Cons -> f(head, tail.foldRight(z, f))
                 }
 
         fun sum2(ns: List<Int>) =
-                foldRight(ns, 0) { x, y -> x + y }
+                ns.foldRight(0) { x, y -> x + y }
 
         fun product2(ns: List<Double>) =
-                foldRight(ns, 1.0) { a, b -> a * b } // `_ * _` is more concise notation for `(x,y) -> x * y`; see sidebar
+                ns.foldRight(1.0) { a, b -> a * b } // `_ * _` is more concise notation for `(x,y) -> x * y`; see sidebar
 
         /*
         3. The third case is the first that matches, with `x` bound to 1 and `y` bound to 2.
@@ -124,7 +291,7 @@ sealed class List<out A> {
 
             tailrec fun go(cur: List<A>): List<A> = when(cur) {
                 is Nil -> throw Exception("init of empty list")
-                is Cons -> if(cur.tail == Nil) apply(buf) else {
+                is Cons -> if(cur.tail == Nil) fromList(buf) else {
                     buf += cur.head;
                     go(cur.tail)
                 }
@@ -133,42 +300,21 @@ sealed class List<out A> {
         }
 
         /*
-        No, this is not possible! The reason is because _before_ we ever call our function, `f`, we evaluate its argument,
-        which in the case of `foldRight` means traversing the list all the way to the end. We need _non-strict_ evaluation
-        to support early termination---we discuss this in chapter 5.
-        */
-
-        /*
-        We get back the original list! Why is that? As we mentioned earlier, one way of thinking about what `foldRight` "does"
-        is it replaces the `Nil` constructor of the list with the `z` argument, and it replaces the `Cons` constructor with
-        the given function, `f`. If we just supply `Nil` for `z` and `Cons` for `f`, then we get back the input list.
-
-        foldRight(Cons(1, Cons(2, Cons(3, Nil))), Nil:List<Int>)(Cons(_,_))
-        Cons(1, foldRight(Cons(2, Cons(3, Nil)), Nil:List<Int>)(Cons(_,_)))
-        Cons(1, Cons(2, foldRight(Cons(3, Nil), Nil:List<Int>)(Cons(_,_))))
-        Cons(1, Cons(2, Cons(3, foldRight(Nil, Nil:List<Int>)(Cons(_,_)))))
-        Cons(1, Cons(2, Cons(3, Nil)))
-        */
-
-        fun <A> length(l: List<A>): Int =
-                foldRight(l, 0) { _, acc -> acc + 1 }
-
-        /*
         It's common practice to annotate functions you expect to be tail-recursive with the `tailrec` annotation. If the
         function is not tail-recursive, it will yield a compile error, rather than silently compiling the code and resulting
         in greater stack space usage at runtime.
         */
-        tailrec fun <A, B> foldLeft(l: List<A>, z: B, f: (B, A) -> B): B = when(l) {
+        tailrec fun <A, B> List<A>.foldLeft(z: B, f: (B, A) -> B): B = when(this) {
             is Nil -> z
-            is Cons -> foldLeft(l.tail, f(z,l.head), f)
+            is Cons -> tail.foldLeft(f(z, head), f)
         }
 
-        fun sum3(l: List<Int>) = foldLeft(l, 0) { a, b -> a + b }
-        fun product3(l: List<Double>) = foldLeft(l, 1.0) { a, b -> a * b}
+        fun sum3(l: List<Int>) = l.foldLeft(0) { a, b -> a + b }
+        fun product3(l: List<Double>) = l.foldLeft(1.0) { a, b -> a * b}
 
-        fun <A> length2(l: List<A>): Int = foldLeft(l, 0) { acc, h -> acc + 1 }
+        fun <A> length2(l: List<A>): Int = l.foldLeft(0) { acc, h -> acc + 1 }
 
-        fun <A> reverse(l: List<A>): List<A> = foldLeft(l, apply()) { acc, h -> Cons(h, acc) }
+        fun <A> reverse(l: List<A>): List<A> = l.foldLeft(apply()) { acc, h -> Cons(h, acc) }
 
         /*
         The implementation of `foldRight` in terms of `reverse` and `foldLeft` is a common trick for avoiding stack overflows
@@ -182,20 +328,26 @@ sealed class List<out A> {
         more of theoretical interest - they aren't stack-safe and won't work for large lists.
         */
         fun <A, B> foldRightViaFoldLeft(l: List<A>, z: B, f: (A, B) -> B): B =
-                foldLeft(reverse(l), z) { b, a -> f(a,b) }
+                reverse(l).foldLeft(z) { b, a -> f(a,b) }
 
         fun <A, B> foldRightViaFoldLeft_1(l: List<A>, z: B, f: (A, B) -> B): B =
-                foldLeft(l, { b: B -> b }) { g, a -> { b -> g(f(a, b)) } } (z)
+                l.foldLeft({ b: B -> b }) { g, a -> { b -> g(f(a, b)) } } (z)
 
         fun <A, B> foldLeftViaFoldRight(l: List<A>, z: B, f: (B, A) -> B): B =
-                foldRight(l, { b: B -> b }) { a, g -> { b -> g(f(b, a)) } } (z)
+                l.foldRight({ b: B -> b }) { a, g -> { b -> g(f(b, a)) } } (z)
+
+        fun <A> List<A>.append(a2: List<A>): List<A> =
+                when(this) {
+                    is List.Nil -> a2
+                    is List.Cons -> List.Cons(head, tail.append(a2))
+                }
 
         /*
         `append` simply replaces the `Nil` constructor of the first list with the second list, which is exactly the operation
         performed by `foldRight`.
         */
         fun <A> appendViaFoldRight(l: List<A>, r: List<A>): List<A> =
-        foldRight(l, r) { h, l -> Cons(h, l) }
+                l.foldRight(r) { h, l -> Cons(h, l) }
 
         /*
         Since `append` takes time proportional to its first argument, and this first argument never grows because of the
@@ -210,44 +362,19 @@ sealed class List<out A> {
         or even `(x: List<A>, y: List<A>) -> append(x,y)` if the function is polymorphic and the type arguments aren't known.
         */
         fun <A> concat(l: List<List<A>>): List<A> =
-                foldRight(l, Nil as List<A>) { l1, l2 -> append(l1, l2) }
+                l.foldRight(Nil as List<A>) { l1, l2 -> l1.append(l2) }
 
         fun add1(l: List<Int>): List<Int> =
-                foldRight(l, Nil as List<Int>) { h, t -> Cons(h + 1, t) }
+                l.foldRight(Nil as List<Int>) { h, t -> Cons(h + 1, t) }
 
         fun doubleToString(l: List<Double>): List<String> =
-                foldRight(l, Nil as List<String>) { h, t -> Cons(h.toString(), t) }
-
-        /*
-        A natural solution is using `foldRight`, but our implementation of `foldRight` is not stack-safe. We can
-        use `foldRightViaFoldLeft` to avoid the stack overflow (variation 1), but more commonly, with our current
-        implementation of `List`, `map` will just be implemented using local mutation (variation 2). Again, note that the
-        mutation isn't observable outside the function, since we're only mutating a buffer that we've allocated.
-        */
-        fun <A, B> map(l: List<A>, f: (A) -> B): List<B> =
-                foldRight(l, Nil as List<B>) { h, t -> Cons(f(h), t) }
-
-        fun <A, B> map_1(l: List<A>, f: (A) -> B): List<B> =
-                foldRightViaFoldLeft(l, Nil as List<B>) { h, t -> Cons(f(h),t) }
-
-        fun <A, B> map_2(l: List<A>, f: (A) -> B): List<B> {
-            val buf = LinkedList<B>()
-            tailrec fun go(l: List<A>): Unit = when(l) {
-                is Nil -> Unit
-                is Cons -> {
-                    buf += f(l.head)
-                    go(l.tail)
-                }
-            }
-            go(l)
-            return apply(buf) // converting from the standard Scala list to the list we've defined here
-        }
+                l.foldRight(Nil as List<String>) { h, t -> Cons(h.toString(), t) }
 
         /*
         The discussion about `map` also applies here.
         */
         fun <A> filter(l: List<A>, f: (A) -> Boolean): List<A> =
-                foldRight(l, Nil as List<A>) { h, t -> if (f(h)) Cons(h,t) else t }
+                l.foldRight(Nil as List<A>) { h, t -> if (f(h)) Cons(h,t) else t }
 
         fun <A> filter_1(l: List<A>, f: (A) -> Boolean): List<A> =
                 foldRightViaFoldLeft(l, Nil as List<A>) { h, t -> if (f(h)) Cons(h,t) else t }
@@ -262,14 +389,14 @@ sealed class List<out A> {
                 } else Unit
             }
             go(l)
-            return apply(buf) // converting from the standard Scala list to the list we've funined here
+            return fromList(buf) // converting from the standard Scala list to the list we've funined here
         }
 
         /*
         This could also be implemented directly using `foldRight`.
         */
         fun <A, B> flatMap(l: List<A>, f: (A) -> List<B>): List<B> =
-                concat(map(l, f))
+                concat(l.map(f))
 
         fun <A> filterViaFlatMap(l: List<A>, f: (A) -> Boolean): List<A> =
                 flatMap(l) { a -> if (f(a)) apply(a) else Nil }
@@ -335,3 +462,7 @@ sealed class List<out A> {
         }
     }
 }
+
+fun <T> H1<List.T, T>.toOri(): List<T> = this as List<T>
+
+infix fun <A> A.cons(tail: List<A>): List<A> = List.Cons(this, tail)

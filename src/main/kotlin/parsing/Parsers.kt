@@ -1,14 +1,15 @@
 package parsing
 
-import fj.Ord
-import fj.data.Either
-import fj.data.List
-import fj.data.Option
+import datastructures.cons
+import datastructures.List
+import datastructures.List.Companion.foldLeft
+import errorhanding.Either
+import errorhanding.Option
+import errorhanding.orSome
 import fj.test.Gen
 import fj.test.Property
 import fj.test.Property.prop
 import fj.test.Property.property
-import monad.cons
 import java.util.regex.Pattern
 
 /**
@@ -77,12 +78,12 @@ interface Parsers {
             p1.flatMap { a -> p2().map { b -> Pair(a, b) } }
 
     fun <T> Parser<T>.many(): Parser<List<T>> =
-            map2(this, { this.many() }) { f, l -> List.cons(f, l) }.or<List<T>>(succeed(List.nil()))
+            map2(this, { this.many() }) { f, l -> f cons l }.or<List<T>>(succeed(List.nil()))
 
     fun <A> listOfN(n: Int, p: Parser<A>): Parser<List<A>> =
             when {
                 n <= 0 -> succeed(List.nil())
-                else -> map2(p, { listOfN(n - 1, p) }) { f, l -> List.cons(f, l) }
+                else -> map2(p, { listOfN(n - 1, p) }) { f, l -> f cons l }
             }
 
     fun <A, B, C> map2(p1: Parser<A>, p2: () -> Parser<B>, f: (A, B) -> C): Parser<C> =
@@ -92,7 +93,7 @@ interface Parsers {
             string(c.toString()).map { it.first() }
 
     fun <A> Parser<A>.many1(): Parser<List<A>> =
-            map2(this, { many() }) { f, l -> List.cons(f, l) }
+            map2(this, { many() }) { f, l -> f cons l }
 
     //Test
     fun <A> equal(p1: Parser<A>, p2: Parser<A>, inGen: Gen<String>): Property =
@@ -118,7 +119,7 @@ interface Parsers {
             map2(p, { slice(end()) }) { a, _ -> a }
 
     fun <A> opt(p: Parser<A>): Parser<Option<A>> =
-            p.map { Option.some(it) }.or<Option<A>>(succeed(Option.none()))
+            p.map { Option.Some(it) }.or<Option<A>>(succeed(Option.none()))
 
     /** Parser which consumes zero or more whitespace characters. */
     fun whitespace(): Parser<String> = regex("\\s*".toRegex())
@@ -162,7 +163,7 @@ interface Parsers {
 
     /** Parses a sequence of left-associative binary operators with the same precedence. */
     fun <A> opL(p: Parser<A>, op: Parser<(A, A) -> A>): Parser<A> =
-            map2(p, { product(op, { p }).many() }) { h, t -> t.foldLeft({ a, b -> b.first(a, b.second) }, h) }
+            map2(p, { product(op, { p }).many() }) { h, t -> t.foldLeft(h, { a, b -> b.first(a, b.second) }) }
 
     /** Wraps `p` in start/stop delimiters. */
     fun <A> surround(start: Parser<out Any>, stop: Parser<out Any>, p: () -> Parser<A>) =
@@ -187,7 +188,7 @@ data class Location(val input: String, val offset: Int = 0) {
         }
     }
 
-    fun toError(msg: String): ParseError = ParseError(List.single(Pair(this, msg)))
+    fun toError(msg: String): ParseError = ParseError(List.apply(Pair(this, msg)))
 
     fun advanceBy(n: Int): Location = copy(offset = offset + n)
 
@@ -216,10 +217,10 @@ data class ParseState(val loc: Location) {
 
 data class ParseError(val stack: List<Pair<Location, String>>) {
     fun push(loc: Location, msg: String): ParseError =
-            copy(stack = List.cons(Pair(loc, msg), stack))
+            copy(stack = Pair(loc, msg) cons stack)
 
     fun label(s: String): ParseError =
-            ParseError(latestLoc()?.let { List.single(Pair(it, s)) } ?: List.nil())
+            ParseError(latestLoc()?.let { List.apply(Pair(it, s)) } ?: List.nil())
 
     fun latestLoc(): Location? =
             latest()?.first
@@ -254,10 +255,11 @@ data class ParseError(val stack: List<Pair<Location, String>>) {
      * messages at the same location have their messages merged,
      * separated by semicolons */
     fun collapseStack(s: List<Pair<Location, String>>): List<Pair<Location, String>> =
-            s.groupBy { it.first }
-                    .map { it.map { it.second }.joinToString(separator = "; ") }
-                    .toList().sort(Ord.p2Ord1(Ord.intOrd.contramap { it.offset }))
-                    .map { it._1() to it._2() }
+            List.fromList(s.groupBy { it.first }
+                    .mapValues { it.value.map { it.second }.joinToString(separator = "; ") }
+                    .toList()
+                    .sortedBy { it.first.offset }
+                    .map { it.first to it.second })
 
     fun formatLoc(l: Location): String = l.line.toString() + "." + l.col
 }

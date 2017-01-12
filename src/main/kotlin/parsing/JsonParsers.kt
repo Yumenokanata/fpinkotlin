@@ -1,9 +1,8 @@
 package parsing
 
-import findPrefixOf
+import datastructures.List
+import errorhanding.Either
 import parsing.JsonExample.jsonTxt
-import fj.data.Either
-import fj.data.List
 import parsing.JsonExample.malformedJson1
 import parsing.JsonExample.malformedJson2
 
@@ -75,13 +74,13 @@ object JsonExample {
 }
 
 fun <E, R> printResult(e: Either<E, R>) =
-        e.either({ println(it) }, { println(it) })
+        e.fold({ println(it) }, { println(it) })
 
 fun main(args: Array<String>) {
     val p = MyParsers()
     val json: Parser<JSON> = JSON.jsonParser(p)
     printResult(p.run { json.run(jsonTxt) })
-    printResult(p.run { json.run(jsonTxt) } )
+    printResult(p.run { json.run(jsonTxt) })
     println("--")
     printResult(p.run { json.run(malformedJson1) } )
     println("--")

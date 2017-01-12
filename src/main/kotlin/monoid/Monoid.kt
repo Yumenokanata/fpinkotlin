@@ -3,8 +3,10 @@ package monoid
 import fj.Show
 import fj.test.Gen
 import fj.test.Property
-import fj.data.List
-import fj.data.Option
+import datastructures.List
+import datastructures.List.Companion.foldRight
+import errorhanding.Option
+import errorhanding.orSome
 import fj.test.Arbitrary
 import fj.test.CheckResult
 import parallelism.Par
@@ -84,7 +86,7 @@ fun <A> monoidLaws(m: Monoid<A>, gen: Gen<A>): Property =
                 { (x, y, z) -> Property.prop(m.op(m.op(x, y), z) == m.op(x, m.op(y, z))) })
 
 fun <A, B> foldMap(ls: List<A>, m: Monoid<B>, f: (A) -> B): B =
-        ls.map { f(it) }.foldRight(m::op, m.zero())
+        ls.map { f(it) }.foldRight(m.zero(), m::op)
 
 fun <A, B> foldRight(ls: List<A>, z: B, f: (A, B) -> B): B =
     foldMap(ls, endoMonoid<B>(), { a -> { b -> f(a, b) } })(z)
@@ -95,10 +97,10 @@ fun <A, B> foldLeft(ls: List<A>, z: B, f: (B, A) -> B): B =
 fun <A, B> foldMapV(ls: List<A>, m: Monoid<B>, f: (A) -> B): B =
         when {
             ls.isEmpty -> m.zero()
-            ls.isSingle -> f(ls.head())
+            ls.isSingle -> f(ls.head)
             else -> {
                 val p = ls.splitAt(ls.length() / 2)
-                m.op(foldMapV(p._1(), m, f), foldMapV(p._2(), m, f))
+                m.op(foldMapV(p.first, m, f), foldMapV(p.second, m, f))
             }
         }
 
@@ -116,20 +118,20 @@ fun ordered(ints: List<Int>): Boolean {
     val mon = object : Monoid<Option<Triple<Int, Int, Boolean>>> {
         override fun op(a1: Option<Triple<Int, Int, Boolean>>, a2: Option<Triple<Int, Int, Boolean>>): Option<Triple<Int, Int, Boolean>> =
             when {
-                a1.isSome && a2.isSome ->
-                    Option.some(Triple(
-                            Math.min(a1.some().first, a2.some().first),
-                            Math.max(a1.some().second, a2.some().second),
-                            a1.some().third && a2.some().third && a1.some().second <= a2.some().first
+                a1 is Option.Some && a2 is Option.Some ->
+                    Option.Some(Triple(
+                            Math.min(a1.get.first, a2.get.first),
+                            Math.max(a1.get.second, a2.get.second),
+                            a1.get.third && a2.get.third && a1.get.second <= a2.get.first
                     ))
-                a1.isSome -> a1
+                a1 is Option.Some -> a1
                 else -> a2
             }
 
         override fun zero(): Option<Triple<Int, Int, Boolean>> = Option.none()
     }
 
-    return foldMapV(ints, mon, { i -> Option.some(Triple(i, i, true)) }).map { it.third }.orSome(false)
+    return foldMapV(ints, mon, { i -> Option.Some(Triple(i, i, true)) }).map { it.third }.orSome { false }
 }
 
 sealed class WC {

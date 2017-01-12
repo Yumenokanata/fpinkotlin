@@ -2,12 +2,15 @@ package applicative
 
 import fj.F
 
-import fj.data.List
-import fj.data.Option
-import fj.data.Stream
+import datastructures.List
+import datastructures.List.Companion.foldLeft
 import fj.test.Gen
 import fj.test.Property
 import monad.*
+import datastructures.cons
+import datastructures.toOri
+import errorhanding.Option
+import laziness.Stream
 import monoid.Monoid
 import java.util.*
 
@@ -51,10 +54,10 @@ interface Applicative<F> : Functor<F> {
             apply(apply(unit(f.curry()), fa), fb)
 
     fun <A, B> traverse(la: List<A>, f: (A) -> H1<F, B>): H1<F, List<B>> =
-            la.foldLeft({ mlb, a -> map2(f(a), mlb) { h, l -> h cons l } }, unit(List.nil<B>()))
+            la.foldLeft(unit(List.nil<B>()), { mlb, a -> map2(f(a), mlb) { h, l -> h cons l } })
 
     fun <A> sequence(fas: List<H1<F, A>>): H1<F, List<A>> =
-            fas.foldLeft({ mla, ma -> map2(ma, mla) { h, l -> h cons l } }, unit(List.nil<A>()))
+            fas.foldLeft(unit(List.nil<A>()), { mla, ma -> map2(ma, mla) { h, l -> h cons l } })
 
     fun <A> replicateM(n: Int, fa: H1<F, A>): H1<F, List<A>> =
             map(fa, { a -> List.replicate(n, a) })
@@ -71,8 +74,8 @@ interface Applicative<F> : Functor<F> {
      *   val self = this
      *   new Applicative[({type f[x] = (F[x], G[x])})#f] {
      *     def unit[A](a: => A) = (self.unit(a), G.unit(a))
-     *     override def apply[A,B](fs: (F[A => B], G[A => B]))(p: (F[A], G[A])) =
-     *       (self.apply(fs._1)(p._1), G.apply(fs._2)(p._2))
+     *     override def fromList[A,B](fs: (F[A => B], G[A => B]))(p: (F[A], G[A])) =
+     *       (self.fromList(fs._1)(p._1), G.fromList(fs._2)(p._2))
      *   }
      * }
      */
@@ -95,7 +98,7 @@ interface Applicative<F> : Functor<F> {
     /**
      * 应用函子组合子，用于组合不同的应用函子
      *
-     * Here we simply use `map2` to lift `apply` and `unit` themselves from one
+     * Here we simply use `map2` to lift `fromList` and `unit` themselves from one
      * Applicative into the other.
      * If `self` and `G` both satisfy the laws, then so does the composite.
      * The full proof can be found at
@@ -157,7 +160,7 @@ fun <T> narrow(value: H1<StreamU, T>): StreamApplicative<T> = value as StreamApp
 
 val streamApplicative = object : Applicative<StreamU> {
     override fun <A, B, C> map2(fa: H1<StreamU, A>, fb: H1<StreamU, B>, f: (A, B) -> C): H1<StreamU, C> =
-            StreamApplicative(narrow(fa).s.zip(narrow(fb).s).map { p -> f(p._1(), p._2()) })
+            StreamApplicative(narrow(fa).s.zip(narrow(fb).s).map { p -> f(p.first, p.second) })
 
     override fun <A> unit(a: () -> A): H1<StreamU, A> =
             StreamApplicative(Stream.repeat(a()))
@@ -314,16 +317,18 @@ interface Traverse<F> : Functor<F>, Foldable<F> {
             mapAccum<List<A>, A, A>(fa, List.nil(), { a, s -> a to (a cons s) }).second.reverse()
 
     fun <A> reverse(fa: H1<F, A>): H1<F, A> =
-            mapAccum<List<A>, A, A>(fa, toList(fa).reverse(), { _, s -> (s.head() to s.tail()) }).first
+            mapAccum<List<A>, A, A>(fa, toList(fa).reverse(), { _, s -> (s.head to s.tail) }).first
 
     override fun <A, B> foldLeft(la: H1<F, A>, z: B, f: (B, A) -> B): B =
             mapAccum(la, z, { a, b -> f(b, a) to b }).second
+
+    fun <A : B, B> sum(la: H1<F, A>, num: Monoid<B>): B = foldLeft(la, num.zero(), num::op)
 
     // 组合可遍历结构
     fun <A, B> zip(fa: H1<F, A>, fb: H1<F, B>): H1<F, Pair<A, B>> =
             mapAccum(fa, toList(fb)) { a, s ->
                 when {
-                    s.isNotEmpty -> (a to s.head()) to s.tail()
+                    s.isNotEmpty -> (a to s.head) to s.tail
                     else -> throw java.lang.RuntimeException("zip: Incompatible shapes.")
                 }
             }.first
@@ -331,7 +336,7 @@ interface Traverse<F> : Functor<F>, Foldable<F> {
     fun <A, B> zipL(fa: H1<F, A>, fb: H1<F, B>): H1<F, Pair<A, Option<B>>> =
             mapAccum(fa, toList(fb)) { a, s ->
                 when {
-                    s.isNotEmpty -> (a to Option.some(s.head())) to s.tail()
+                    s.isNotEmpty -> (a to Option.Some(s.head)) to s.tail
                     else -> (a to Option.none<B>()) to List.nil<B>()
                 }
             }.first
@@ -339,7 +344,7 @@ interface Traverse<F> : Functor<F>, Foldable<F> {
     fun <A, B> zipR(fa: H1<F, A>, fb: H1<F, B>): H1<F, Pair<Option<A>, B>> =
             mapAccum(fb, toList(fa)) { b, s ->
                 when {
-                    s.isNotEmpty -> (Option.some(s.head()) to b) to s.tail()
+                    s.isNotEmpty -> (Option.Some(s.head) to b) to s.tail
                     else -> (Option.none<A>() to b) to List.nil<A>()
                 }
             }.first
@@ -390,29 +395,26 @@ fun <M> monoidApplicative(m: Monoid<M>) =
         }
 
 //List的可遍历函子
-val listTraverse = object : Traverse<ListU> {
-    override fun <T, App : Applicative<T>, A, B> traverse(fa: H1<ListU, A>, f: (A) -> H1<T, B>, apply: App): H1<T, H1<ListU, B>> =
-            apply.map(narrow(fa).l.foldRight({ a, fbs -> apply.map2(f(a), fbs, { h, l -> h cons l }) }, apply.unit(List.nil<B>())))
-            { HTypeList(it) }
+val listTraverse = object : Traverse<List.T> {
+    override fun <T, App : Applicative<T>, A, B> traverse(fa: H1<List.T, A>, f: (A) -> H1<T, B>, apply: App): H1<T, H1<List.T, B>> =
+            foldRight(fa, apply.unit(List.nil<B>()), { a, fbs -> apply.map2(f(a), fbs, { h, l -> h cons l }) })
 }
 
 //Option的可遍历函子
-val optionTraverse = object : Traverse<OptionU> {
-    override fun <T, App : Applicative<T>, A, B> traverse(fa: H1<OptionU, A>, f: (A) -> H1<T, B>, apply: App): H1<T, H1<OptionU, B>> {
-        val option = narrow(fa).l
-        return when {
-            option.isSome -> apply.map(f(option.some()), { HTypeOption(Option.some(it)) })
-            option.isNone -> apply.unit(HTypeOption(Option.none<B>()))
-            else -> apply.unit(HTypeOption(Option.none<B>()))
-        }
-    }
+val optionTraverse = object : Traverse<Option.T> {
+    override fun <T, App : Applicative<T>, A, B> traverse(fa: H1<Option.T, A>, f: (A) -> H1<T, B>, apply: App): H1<T, H1<Option.T, B>> =
+            when(fa) {
+                is Option.Some -> apply.map(f(fa.get), { Option.Some(it) })
+                is Option.None -> apply.unit(Option.none<B>())
+                else -> apply.unit(Option.none<B>())
+            }
 }
 
 //ListTree的可遍历函子
 data class ListTree<A>(val head: A, val tail: List<ListTree<A>>)
 
 data class HTypeListTree<T>(val t: ListTree<T>) : H1<ListTreeU, T> {
-    constructor(h: T, l: H1<ListU, H1<ListTreeU, T>>): this(ListTree(h, narrow(l).l.map { it.toOri() }))
+    constructor(h: T, l: H1<List.T, H1<ListTreeU, T>>): this(ListTree(h, l.toOri().map { it.toOri() }))
 }
 
 object ListTreeU
@@ -426,7 +428,7 @@ fun <A> H1<ListTreeU, A>.toOri(): ListTree<A> = narrow(this).t
 val treeTraverse = object : Traverse<ListTreeU> {
     override fun <T, App : Applicative<T>, A, B> traverse(fa: H1<ListTreeU, A>, f: (A) -> H1<T, B>, ap: App): H1<T, H1<ListTreeU, B>> {
         val tree = fa.toOri()
-        val tail: H1<ListU, H1<ListTreeU, A>> = HTypeList(tree.tail.map { it.toHType() })
+        val tail: H1<List.T, H1<ListTreeU, A>> = tree.tail.map { it.toHType() }
         return ap.map2(f(tree.head), listTraverse.traverse(tail, { a -> traverse(a, f, ap) }, ap))
         { h, l -> HTypeListTree(h, l) }
     }

@@ -3,24 +3,30 @@ package monad
 import applicative.Applicative
 import applicative.Traverse
 import applicative.curry
+import datastructures.List
+import datastructures.List.Companion.foldLeft
+import datastructures.List.Companion.foldRight
+import datastructures.cons
+import datastructures.toOri
+import errorhanding.Either
+import errorhanding.Option
+import errorhanding.toOri
 import fj.F
 import fj.F2
 import fj.Function
-import fj.data.Either
-import fj.data.Option
-import fj.data.List
-import fj.data.Stream
 import fj.test.Gen
 import fj.test.Property
+import laziness.Stream
+import laziness.toOri
 import monoid.*
 
 /**
  * Created by yume on 16-12-27.
  */
 
-interface H1<X, T>
+interface H1<out X, out T>
 
-interface H2<X, Y, T> : H1<X, H1<Y, T>>
+interface H2<out X, out Y, out T> : H1<H1<X, Y>, T>
 
 class HTypeFG<F, G> {
     inner class HTypeFG<T>(val f: H1<F, H1<G, T>>) : H1<H1<F, G>, T>
@@ -38,8 +44,6 @@ interface Functor<F> {
     fun <A, B> map(fa: H1<F, A>, f: (A) -> B): H1<F, B>
 }
 
-infix fun <T> T.cons(l: List<T>): List<T> = List.cons(this, l)
-
 interface Monad<F> : Applicative<F>, Functor<F> {
     override fun <A> unit(a: () -> A): H1<F, A>
 
@@ -54,10 +58,10 @@ interface Monad<F> : Applicative<F>, Functor<F> {
             flatMap(fa) { a -> map(fb) { b -> f(a, b) } }
 
     override fun <A> sequence(lma: List<H1<F, A>>): H1<F, List<A>> =
-            lma.foldLeft({ mla, ma -> map2(mla, ma) { l, h -> List.cons(h, l) } }, unit { List.nil<A>() })
+            lma.foldLeft(unit { List.nil<A>() }, { mla, ma -> map2(mla, ma) { l, h -> h cons l } })
 
     override fun <A, B> traverse(la: List<A>, f: (A) -> H1<F, B>): H1<F, List<B>> =
-            la.foldLeft({ mla, ma -> map2(mla, f(ma)) { l, h -> List.cons(h, l) } }, unit { List.nil<B>() })
+            la.foldLeft(unit { List.nil<B>() }, { mla, ma -> map2(mla, f(ma)) { l, h -> h cons l } })
 
     override fun <A> replicateM(n: Int, ma: H1<F, A>): H1<F, List<A>> =
             flatMap(ma, { a -> unit { List.replicate(n, a) } })
@@ -68,14 +72,15 @@ interface Monad<F> : Applicative<F>, Functor<F> {
             { a -> flatMap(f(a), g) }
 
     fun <A> filterM(ms: List<A>, f: (A) -> H1<F, Boolean>): H1<F, List<A>> =
-            ms.foldLeft({ la, a ->
-                compose(f, {
-                    if (it)
-                        map2(unit { a }, la) { h, l -> h cons l }
-                    else
-                        la
-                })(a) },
-                    unit { List.nil<A>() })
+            ms.foldLeft(
+                    unit { List.nil<A>() },
+                    { la, a ->
+                        compose(f, {
+                            if (it)
+                                map2(unit { a }, la) { h, l -> h cons l }
+                            else
+                                la
+                        })(a) })
 
     //使用compose实现flatMap的练习，此时基本组合子为compose和unit
     fun <A, B> _flatMap(ma: H1<F, A>, f: (A) -> H1<F, B>): H1<F, B> =
@@ -112,8 +117,8 @@ interface Monad<F> : Applicative<F>, Functor<F> {
 
     //使用函数f折叠流，组合作用并返回结果
     fun <A, B> foldM(l: Stream<A>, z: B, f: (B, A) -> H1<F, B>): H1<F, B> =
-            when {
-                l.isNotEmpty -> flatMap(f(z, l.head()), { z2 -> foldM(l.tail()._1(), z2, f) })
+            when(l) {
+                is Stream.Cons -> flatMap(f(z, l.h()), { z2 -> foldM(l.t(), z2, f) })
                 else -> unit(z)
             }
 
@@ -168,46 +173,21 @@ fun <M, A, B> monadIdentityLaw(gen: Gen<A>, fGen: Gen<F<A, B>>, m: Monad<M>): Pr
 
 
 //List Monad
-data class HTypeList<T>(val l: List<T>) : H1<ListU, T>
+val listMonad = object : Monad<List.T> {
+    override fun <A> unit(a: () -> A): H1<List.T, A> =
+            List.apply(a())
 
-object ListU
-
-fun <T> List<T>.toHType(): H1<ListU, T> = HTypeList(this)
-
-fun <T> H1<ListU, T>.toOri(): List<T> = narrow(this).l
-
-fun <A> narrow(value: H1<ListU, A>): HTypeList<A> {
-    return value as HTypeList<A>
+    override fun <A, B> flatMap(gha: H1<List.T, A>, f: (A) -> H1<List.T, B>): H1<List.T, B> =
+            List.flatMap(gha.toOri()) { f(it).toOri() }
 }
-
-val listMonad = object : Monad<ListU> {
-    override fun <A> unit(a: () -> A): H1<ListU, A> =
-            HTypeList(List.single(a()))
-
-    override fun <A, B> flatMap(gha: H1<ListU, A>, f: (A) -> H1<ListU, B>): H1<ListU, B> =
-            HTypeList(narrow(gha).l.bind { narrow(f(it)).l })
-}
-
 
 //Option Monad
-data class HTypeOption<T>(val l: Option<T>) : H1<OptionU, T>
+val optionMonad = object : Monad<Option.T> {
+    override fun <A> unit(a: () -> A): H1<Option.T, A> =
+            Option.fromNull(a())
 
-object OptionU
-
-fun <T> Option<T>.toHType(): H1<OptionU, T> = HTypeOption(this)
-
-fun <T> H1<OptionU, T>.toOri(): Option<T> = narrow(this).l
-
-fun <A> narrow(value: H1<OptionU, A>): HTypeOption<A> {
-    return value as HTypeOption<A>
-}
-
-val optionMonad = object : Monad<OptionU> {
-    override fun <A> unit(a: () -> A): H1<OptionU, A> =
-            HTypeOption(Option.fromNull(a()))
-
-    override fun <A, B> flatMap(gha: H1<OptionU, A>, f: (A) -> H1<OptionU, B>): H1<OptionU, B> =
-            HTypeOption(narrow(gha).l.bind { narrow(f(it)).l })
+    override fun <A, B> flatMap(gha: H1<Option.T, A>, f: (A) -> H1<Option.T, B>): H1<Option.T, B> =
+            gha.toOri().flatMap { f(it).toOri() }
 }
 
 
@@ -263,27 +243,17 @@ class ReaderMonads<R> {
 
 
 //Either Monad
-class EitherType<L> {
-    inner class HTypeEither<R>(val r: Either<L, R>) : H1<EitherU, R>
+fun <E> eitherMonad(): Monad<H1<Either.T, E>> =
+        object : Monad<H1<Either.T, E>> {
+            override fun <A> unit(a: () -> A): H2<Either.T, E, A> = Either.Right(a())
 
-    object EitherU
-
-    fun <A> narrow(value: H1<EitherU, A>): HTypeEither<A> {
-        @Suppress("UNCHECKED_CAST")
-        return value as HTypeEither<A>
-    }
-}
-
-fun <L> EitherType<L>.eitherMonad(): Monad<EitherType.EitherU> =
-        object : Monad<EitherType.EitherU> {
-            override fun <A> unit(a: () -> A): H1<EitherType.EitherU, A> = HTypeEither(Either.right(a()))
-
-            override fun <A, B> flatMap(gha: H1<EitherType.EitherU, A>, f: (A) -> H1<EitherType.EitherU, B>): H1<EitherType.EitherU, B> =
-                    HTypeEither(
-                            Either.joinRight(
-                                    Either.rightMap_<L, A, Either<L, B>>()
-                                            .f({ a: A -> narrow(f(a)).r}.toF())
-                                            .f(narrow(gha).r)))
+            override fun <A, B> flatMap(gha: H1<H1<Either.T, E>, A>, f: (A) -> H1<H1<Either.T, E>, B>): H1<H1<Either.T, E>, B> {
+                val either = gha.toOri()
+                return when(either) {
+                    is Either.Right -> f(either.get)
+                    is Either.Left -> Either.Left(either.get)
+                }
+            }
         }
 
 
@@ -308,32 +278,26 @@ interface Foldable<F> {
 }
 
 
-val listFoldable = object : Foldable<ListU> {
-    override fun <A, B> foldRight(la: H1<ListU, A>, z: B, f: (A, B) -> B): B =
-        narrow(la).l.foldRight(f, z)
+val listFoldable = object : Foldable<List.T> {
+    override fun <A, B> foldRight(la: H1<List.T, A>, z: B, f: (A, B) -> B): B =
+            la.toOri().foldRight(z, f)
 
-    override fun <A, B> foldLeft(la: H1<ListU, A>, z: B, f: (B, A) -> B): B =
-            narrow(la).l.foldLeft(f, z)
+    override fun <A, B> foldLeft(la: H1<List.T, A>, z: B, f: (B, A) -> B): B =
+            la.toOri().foldLeft(z, f)
 
-    override fun <A, B> foldMap(ls: H1<ListU, A>, f: (A) -> B, mb: Monoid<B>): B =
-            foldMapV(narrow(ls).l, mb, f)
+    override fun <A, B> foldMap(ls: H1<List.T, A>, f: (A) -> B, mb: Monoid<B>): B =
+            foldMapV(ls.toOri(), mb, f)
 
-    override fun <A> toList(fa: H1<ListU, A>): List<A> = narrow(fa).l
+    override fun <A> toList(fa: H1<List.T, A>): List<A> = fa.toOri()
 }
 
 
-data class HTypeStream<T>(val s: Stream<T>) : H1<StreamU, T>
+val streamFoldable = object : Foldable<Stream.T> {
+    override fun <A, B> foldRight(la: H1<Stream.T, A>, z: B, f: (A, B) -> B): B =
+            la.toOri().foldRight({ z }, { a, lb -> f(a, lb()) })
 
-object StreamU
-
-fun <T> narrow(value: H1<StreamU, T>): HTypeStream<T> = value as HTypeStream<T>
-
-val streamFoldable = object : Foldable<StreamU> {
-    override fun <A, B> foldRight(la: H1<StreamU, A>, z: B, f: (A, B) -> B): B =
-            narrow(la).s.foldRight({ a, lb -> f(a, lb._1()) }, z)
-
-    override fun <A, B> foldLeft(la: H1<StreamU, A>, z: B, f: (B, A) -> B): B =
-            narrow(la).s.foldLeft({ b, a -> f(b, a) }, z)
+    override fun <A, B> foldLeft(la: H1<Stream.T, A>, z: B, f: (B, A) -> B): B =
+            la.toOri().foldLeft(z, { b, a -> f(b, a) })
 }
 
 
@@ -375,31 +339,28 @@ val treeFoldable = object : Foldable<TreeU> {
 }
 
 
-val optionFoldable = object : Foldable<OptionU> {
-    override fun <A, B> foldRight(la: H1<OptionU, A>, z: B, f: (A, B) -> B): B {
-        val option = narrow(la).l
-        return when {
-            option.isNone -> z
-            option.isSome -> f(option.some(), z)
-            else -> z
+val optionFoldable = object : Foldable<Option.T> {
+    override fun <A, B> foldRight(la: H1<Option.T, A>, z: B, f: (A, B) -> B): B {
+        val option = la.toOri()
+        return when(option) {
+            is Option.None -> z
+            is Option.Some -> f(option.get, z)
         }
     }
 
-    override fun <A, B> foldLeft(la: H1<OptionU, A>, z: B, f: (B, A) -> B): B {
-        val option = narrow(la).l
-        return when {
-            option.isNone -> z
-            option.isSome -> f(z, option.some())
-            else -> z
+    override fun <A, B> foldLeft(la: H1<Option.T, A>, z: B, f: (B, A) -> B): B {
+        val option = la.toOri()
+        return when(option) {
+            is Option.None -> z
+            is Option.Some -> f(z, option.get)
         }
     }
 
-    override fun <A, B> foldMap(ls: H1<OptionU, A>, f: (A) -> B, mb: Monoid<B>): B {
-        val option = narrow(ls).l
-        return when {
-            option.isNone -> mb.zero()
-            option.isSome -> f(option.some())
-            else -> mb.zero()
+    override fun <A, B> foldMap(ls: H1<Option.T, A>, f: (A) -> B, mb: Monoid<B>): B {
+        val option = ls.toOri()
+        return when(option) {
+            is Option.None -> mb.zero()
+            is Option.Some -> f(option.get)
         }
     }
 }
