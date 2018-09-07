@@ -2,7 +2,7 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
-      <module fileurl="file://$PROJECT_DIR$/.idea/modules/fpinkotlin.iml" filepath="$PROJECT_DIR$/.idea/modules/fpinkotlin.iml" />
+      <module fileurl="file://$PROJECT_DIR$/fpinkotlin.iml" filepath="$PROJECT_DIR$/fpinkotlin.iml" />
       <module fileurl="file://$PROJECT_DIR$/.idea/modules/fpinkotlin_main.iml" filepath="$PROJECT_DIR$/.idea/modules/fpinkotlin_main.iml" group="fpinkotlin" />
       <module fileurl="file://$PROJECT_DIR$/.idea/modules/fpinkotlin_test.iml" filepath="$PROJECT_DIR$/.idea/modules/fpinkotlin_test.iml" group="fpinkotlin" />
     </modules>

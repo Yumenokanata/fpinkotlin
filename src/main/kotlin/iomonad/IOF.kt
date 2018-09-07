@@ -21,6 +21,28 @@ import java.util.concurrent.Future
  * Created by yume on 17-1-3.
  *
  */
+typealias ConsoleIO<A> = IOF.Free<IOF.ConsoleU, A>
+
+// So `Free[F,A]` is not really an I/O type. The interpreter `runFree` gets
+// to choose how to interpret these `F` requests, and whether to do "real" I/O
+// or simply convert to some pure value!
+
+// NB: These interpretations are not stack safe for the same reason,
+// can instead work with `case class ConsoleReader[A](run: String => Trampoline[A])`,
+// which gives us a stack safe monad
+
+// We conclude that a good representation of an `IOF` monad is this:
+typealias IO<A> = IOF.Free<ParU, A>
+
+typealias IOU = H1<IOF.Free.FreeU, ParU>
+
+fun <A> IO<A>.unsafePerformIO(E: ExecutorService): A =
+        ParF.run(E, IOF.run(this, IOF.parMonad).toOri())
+
+
+fun <F, A> narrow(value: H1<H1<IOF.Free.FreeU, F>, A>): IOF.Free<F, A> = value as IOF.Free<F, A>
+
+fun <F, A> H1<H1<IOF.Free.FreeU, F>, A>.toOri(): IOF.Free<F, A> = narrow(this)
 
 object IOF {
     sealed class Free<F, A> : H1<H1<Free.FreeU, F>, A> {
@@ -39,10 +61,6 @@ object IOF {
         data class Suspend<F, A>(val s: H1<F, A>) : Free<F, A>()
         data class FlatMap<F, A, B>(val s: Free<F, A>, val f: (A) -> Free<F, B>) : Free<F, B>()
     }
-
-    fun <F, A> narrow(value: H1<H1<Free.FreeU, F>, A>): Free<F, A> = value as Free<F, A>
-
-    fun <F, A> H1<H1<Free.FreeU, F>, A>.toOri(): Free<F, A> = narrow(this)
 
     fun <F> freeMonad(): Monad<H1<Free.FreeU, F>> =
             object : Monad<H1<Free.FreeU, F>> {
@@ -175,8 +193,6 @@ object IOF {
             fun printLn(line: String): ConsoleIO<Unit> = Free.Suspend(PrintLine(line))
         }
     }
-
-    typealias ConsoleIO<A> = Free<ConsoleU, A>
 
     object ConsoleU
 
@@ -341,17 +357,6 @@ object IOF {
 
     fun <A> runConsoleState(io: ConsoleIO<A>): ConsoleState<A> =
             runFree(io, consoleToState, ConsoleState.monad).toOri()
-
-    // So `Free[F,A]` is not really an I/O type. The interpreter `runFree` gets
-    // to choose how to interpret these `F` requests, and whether to do "real" I/O
-    // or simply convert to some pure value!
-
-    // NB: These interpretations are not stack safe for the same reason,
-    // can instead work with `case class ConsoleReader[A](run: String => Trampoline[A])`,
-    // which gives us a stack safe monad
-
-    // We conclude that a good representation of an `IOF` monad is this:
-    typealias IO<A> = Free<ParU, A>
 
 
     /*

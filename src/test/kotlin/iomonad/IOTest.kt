@@ -12,9 +12,10 @@ import parallelism.Nonblocking
 /**
  * Created by yume on 17-1-4.
  */
-class IOTest {
 
-    typealias Stay<A> = IOF.Free<F0U, A>
+typealias Stay<A> = IOF.Free<F0U, A>
+
+class IOTest {
 
     @Test
     fun testIO() {
