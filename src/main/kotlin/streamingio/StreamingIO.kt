@@ -9,22 +9,19 @@ import errorhanding.Option.Some
 import errorhanding.Option.None
 import iomonad.*
 import monad.H1
-import parallelism.Nonblocking
-import parallelism.Nonblocking.ParU
 import streamingio.Process.Companion.constant
 import streamingio.Process.Companion.eval
 import streamingio.Process.Companion.fileW
 import streamingio.Process.Companion.intersperse
 import streamingio.Process.Companion.lines
+import streamingio.Process.Companion.printlnW
 import streamingio.Process.Companion.resource_
 import streamingio.Process.Companion.runLog
 import java.io.BufferedReader
-import java.io.File
 import java.io.FileReader
 import java.io.FileWriter
 import java.sql.Connection
 import java.sql.PreparedStatement
-import java.sql.ResultSet
 
 
 /*
@@ -47,9 +44,17 @@ We'll use the improved `Await` and `Halt` cases together to ensure
 that all resources get released, even in the event of exceptions.
  */
 
-data class Await<F, out A, O>(
+data class Await<F, A, O>(
         val req: H1<F, A>,
-        val recv: (Either<Throwable, A>) -> Process<F, O>) : Process<F, O>()
+        val recv: (Either<Throwable, A>) -> Process<F, O>) : Process<F, O>() {
+
+    val anyRecv: (Either<Throwable, Any?>) -> Process<F, O> = { either ->
+        when (either) {
+            is Left -> recv(either)
+            is Right -> recv(Either.right(either.get as A))
+        }
+    }
+}
 
 data class Emit<F, O>(
         val head: O,
@@ -82,12 +87,12 @@ sealed class Process<F, O> {
      */
 
     fun <O2> map(f: (O) -> O2): Process<F, O2> = when (this) {
-        is Await<F, *, O> -> await<F, Any?, O2>(req, recv andThen { it.map(f) })
+        is Await<F, *, O> -> await(req, anyRecv andThen { it.map(f) })
         is Emit -> Try { Emit(f(head), tail.map(f)) }
         is Halt -> Halt(err)
     }
 
-    infix fun plusP(p: () -> Process<F, O>): Process<F, O> =
+    operator fun plus(p: () -> Process<F, O>): Process<F, O> =
             this.onHalt {
                 when (it) {
                     is End -> Try(p) // we consult `p` only on normal termination
@@ -96,23 +101,23 @@ sealed class Process<F, O> {
             }
 
     /*
-     * Like `plusP`, but _always_ runs `p`, even if `this` halts with an error.
+     * Like `plus`, but _always_ runs `p`, even if `this` halts with an error.
      */
     fun onComplete(p: () -> Process<F, O>): Process<F, O> =
             this.onHalt {
                 when (it) {
                     is End -> p().asFinalizer()
-                    else -> p().asFinalizer() plusP { Halt(it) } // we always run `p`, but preserve any errors
+                    else -> p().asFinalizer() + { Halt(it) } // we always run `p`, but preserve any errors
                 }
             }
 
     fun asFinalizer(): Process<F, O> = when (this) {
         is Emit -> Emit(head, tail.asFinalizer())
         is Halt -> Halt(err)
-        is Await<F, Any?, O> -> await(req) {
+        is Await<F, *, O> -> await(req) {
             when {
                 it is Either.Left && it.get == Kill -> this.asFinalizer()
-                else -> recv(it)
+                else -> anyRecv(it)
             }
         }
     }
@@ -120,7 +125,7 @@ sealed class Process<F, O> {
     fun onHalt(f: (Throwable) -> Process<F, O>): Process<F, O> = when (this) {
         is Halt -> Try { f(err) }
         is Emit -> Emit(head, tail.onHalt(f))
-        is Await<F, Any?, O> -> Await(req, recv andThen { it.onHalt(f) })
+        is Await<F, *, O> -> Await(req, anyRecv andThen { it.onHalt(f) })
     }
 
     /*
@@ -130,19 +135,19 @@ sealed class Process<F, O> {
     fun <O2> flatMap(f: (O) -> Process<F, O2>): Process<F, O2> =
             when (this) {
                 is Halt -> Halt(err)
-                is Emit -> Try { f(head) } plusP { tail.flatMap(f) }
-                is Await<F, Any?, O> ->
-                    Await(req, recv andThen { it.flatMap(f) })
+                is Emit -> Try { f(head) } + { tail.flatMap(f) }
+                is Await<F, *, O> ->
+                    Await(req, anyRecv andThen { it.flatMap(f) })
             }
 
     fun repeat(): Process<F, O> =
-            this plusP this::repeat
+            this + this::repeat
 
     fun repeatNonempty(): Process<F, O> {
-        val cycle = this.map { o -> Option.some(o) } plusP { emit<F, Option<O>>(Option.None).repeat() }
+        val cycle = this.map { o -> Option.some(o) } + { emit<F, Option<O>>(Option.None).repeat() }
         // cut off the cycle when we see two `None` values in a row, as this
         // implies `this` has produced no values during an iteration
-        val trimmed = cycle pipeR window2() pipeR (takeWhile {
+        val trimmed = cycle pipeTo window2() pipeTo (takeWhile {
             val (i, i2) = it
             when {
                 i is Some && i.get is None && i2 is None -> false
@@ -163,16 +168,15 @@ sealed class Process<F, O> {
      * below, this is not tail recursive and responsibility for stack safety
      * is placed on the `Monad` instance.
      */
-//    fun runLog(implicit F: MonadCatch[F]): F[IndexedSeq[O]] = {
-//      def go(cur: Process<F, O>, acc: IndexedSeq[O]): F[IndexedSeq[O]] =
-//        cur match {
-//          is Emit(h,t) -> go(t, acc :+ h)
-//          is Halt(End) -> F.unit(acc)
-//          is Halt(err) -> F.fail(err)
-//          is Await(req,recv) -> F.flatMap (F.attempt(req)) { e -> go(Try(recv(e)), acc) }
-//        }
-//      go(this, IndexedSeq())
-//    }
+    fun runLog(MC: MonadCatch<F>): H1<F, List<O>> {
+        tailrec fun go(cur: Process<F, O>, acc: List<O>): H1<F, List<O>> =
+                when (cur) {
+                    is Emit -> go(cur.tail, acc + cur.head)
+                    is Halt -> if (cur.err == End) MC.unit(acc) else MC.fail(cur.err)
+                    is Await<F, *, O> -> MC.flatMap(MC.attempt(cur.req)) { e -> go(Try { cur.anyRecv(e) }, acc) }
+                }
+        return go(this, emptyList())
+    }
 
     /*
      * We define `Process1` as a type alias - see the companion object
@@ -186,20 +190,20 @@ sealed class Process<F, O> {
      * `kill` this process, giving it a chance to run any cleanup
      * actions (like closing file handles, etc).
      */
-    infix fun <O2> pipeR(p2: Process1<O, O2>): Process<F, O2> =
+    infix fun <O2> pipeTo(p2: Process1<O, O2>): Process<F, O2> =
             when (p2) {
-                is Halt -> this.kill<O2>().onHalt { e2 -> Halt<F, O2>(p2.err) plusP { Halt(e2) } }
-                is Emit -> Emit(p2.head, this pipeR p2.tail)
-                is Await<Is<O>.f, Any?, O2> -> when (this) {
-                    is Halt -> Halt<F, O>(err) pipeR p2.recv(Left(err))
-                    is Emit -> tail pipeR Try { p2.recv(Right(head)) }
-                    is Await<F, Any?, O> -> await(req, recv andThen { it pipeR p2 })
+                is Halt -> this.kill<O2>().onHalt { e2 -> Halt<F, O2>(p2.err) + { Halt(e2) } }
+                is Emit -> Emit(p2.head, this pipeTo p2.tail)
+                is Await<Is<O>.f, *, O2> -> when (this) {
+                    is Halt -> Halt<F, O>(err) pipeTo (p2.anyRecv(Left(err))).kill<O2>()
+                    is Emit -> tail pipeTo Try { p2.anyRecv(Right(head)) }
+                    is Await<F, *, O> -> await(req, anyRecv andThen { it pipeTo p2 })
                 }
             }
 
     fun <O2> kill(): Process<F, O2> {
         tailrec fun <O2> kill(p: Process<F, O>): Process<F, O2> = when (p) {
-            is Await<F, Any?, O> -> p.recv(Either.Left(Kill)).drain<O2>().onHalt {
+            is Await<F, *, O> -> p.recv(Either.Left(Kill)).drain<O2>().onHalt {
                 when (it) {
                     is Kill -> Halt(End) // we convert the `Kill` exception back to normal termination
                     else -> Halt(it)
@@ -214,19 +218,19 @@ sealed class Process<F, O> {
 
     /** Alias for `this |> p2`. */
     fun <O2> pipe(p2: Process1<O, O2>): Process<F, O2> =
-            this pipeR p2
+            this pipeTo p2
 
     fun <O2> drain(): Process<F, O2> = when (this) {
         is Halt -> Halt(err)
         is Emit -> tail.drain()
-        is Await<F, Any?, O> -> Await(req, recv andThen { it.drain<O2>() })
+        is Await<F, *, O> -> Await(req, anyRecv andThen { it.drain<O2>() })
     }
 
     fun filter(f: (O) -> Boolean): Process<F, O> =
-            this pipeR Process.filter(f)
+            this pipeTo Process.filter(f)
 
     fun take(n: Int): Process<F, O> =
-            this pipeR Process.take(n)
+            this pipeTo Process.take(n)
 
     fun once(): Process<F, O> = take(1)
 
@@ -254,17 +258,17 @@ sealed class Process<F, O> {
     fun <O2, O3> tee(p2: Process<F, O2>, t: Tee<O, O2, O3>): Process<F, O3> {
         return when (t) {
             is Halt -> this.kill<O3>().onComplete { p2.kill() }.onComplete { Halt(t.err) }
-            is Emit -> Emit(t.head, (this tee p2)(t))
-            is Await<T<O, O2>.f, Any?, O3> -> when (t.req.toOri().get) {
+            is Emit -> Emit(t.head, (this tee p2)(t.tail))
+            is Await<T<O, O2>.f, *, O3> -> when (t.req.toOri().get) {
                 is Left -> when (this) {
                     is Halt -> p2.kill<O3>().onComplete { Halt(err) }
-                    is Emit -> (tail tee p2)(Try { t.recv(Right(head)) })
-                    is Await<F, Any?, O> -> await(req, recv andThen { this2 -> (this2 tee p2)(t) })
+                    is Emit -> (tail tee p2)(Try { t.anyRecv(Right(head)) })
+                    is Await<F, *, O> -> await(req, anyRecv andThen { this2 -> (this2 tee p2)(t) })
                 }
                 is Right -> when (p2) {
                     is Halt -> this.kill<O3>().onComplete { Halt(p2.err) }
-                    is Emit -> this.tee(p2.tail)(Try { t.recv(Right(p2.head)) })
-                    is Await<F, Any?, O2> -> await(p2.req, p2.recv andThen { p3 -> (this tee p3)(t) })
+                    is Emit -> this.tee(p2.tail)(Try { t.anyRecv(Right(p2.head)) })
+                    is Await<F, *, O2> -> await(p2.req, p2.anyRecv andThen { p3 -> (this tee p3)(t) })
                 }
             }
         }
@@ -302,7 +306,7 @@ sealed class Process<F, O> {
                 try {
                     p()
                 } catch (e: Throwable) {
-                    cleanup plusP { Halt(e) }
+                    cleanup + { Halt(e) }
                 }
 
         /*
@@ -315,7 +319,7 @@ sealed class Process<F, O> {
                 } catch (e: Throwable) {
                     when (e) {
                         is End -> fallback
-                        else -> cleanup plusP { Halt(e) }
+                        else -> cleanup + { Halt(e) }
                     }
                 }
 
@@ -333,19 +337,20 @@ sealed class Process<F, O> {
         fun <O> runLog(src: Process<IOU, O>): IO<List<O>> = IOF.IO {
             val E = java.util.concurrent.Executors.newFixedThreadPool(4)
 
-            fun go(cur: Process<IOU, O>, acc: List<O>): List<O> =
+            tailrec fun go(cur: Process<IOU, O>, acc: List<O>): List<O> =
                     when (cur) {
                         is Emit -> go(cur.tail, acc + cur.head)
                         is Halt -> if (cur.err == End) acc else throw cur.err
-                        is Await<IOU, Any?, O> -> {
+                        is Await<IOU, *, O> -> {
                             val next = try {
-                                cur.recv(Right(cur.req.toOri().unsafePerformIO(E)))
+                                cur.anyRecv(Right(cur.req.toOri().unsafePerformIO(E)))
                             } catch (err: Throwable) {
                                 cur.recv(Left(err))
                             }
                             go(next, acc)
                         }
                     }
+
             try {
                 go(src, emptyList())
             } finally {
@@ -358,20 +363,21 @@ sealed class Process<F, O> {
          * See the definition in the body of `Process`.
          */
 
-        //TODO
-//      val p: Process<IOU, String> =
-//              await(IO(BufferedReader(FileReader("lines.txt")))) {
-//                  when (it) {
-//                      is Either.Right -> {
-//                          val next: Process<IOU, String> = await(IO(it.get.readLine)) {
-//                              is Either.Left(e) -> await(IO(b.close))(_ -> Halt(e))
-//                              is Either.Right(line) -> Emit(line, next)
-//                          }
-//                          next
-//                      }
-//                      is Either.Left -> Halt(it.get)
-//                  }
-//              }
+        val p: Process<IOU, String> =
+                await(IOF.IO { BufferedReader(FileReader("lines.txt")) }) { eBuffer ->
+                    when (eBuffer) {
+                        is Either.Right -> {
+                            fun next(): Process<IOU, String> = await(IOF.IO { eBuffer.get.readLine() }) { eLine ->
+                                when (eLine) {
+                                    is Either.Left -> await(IOF.IO { eBuffer.get.close() }) { Halt<IOU, String>(eLine.get) }
+                                    is Either.Right -> Emit(eLine.get, next())
+                                }
+                            }
+                            next()
+                        }
+                        is Either.Left -> Halt(eBuffer.get)
+                    }
+                }
 
         /*
          * Generic combinator for producing a `Process<IO, O>` from some
@@ -431,7 +437,6 @@ sealed class Process<F, O> {
         fun <A> evalIO(a: IO<A>): Process<IOU, A> = eval(a)
 
 
-
         /* Some helper functions to improve type inference. */
 
         fun <I, O> await1(recv: (I) -> Process1<I, O>,
@@ -460,7 +465,7 @@ sealed class Process<F, O> {
 
         fun <I> take(n: Int): Process1<I, I> =
                 if (n <= 0) halt1()
-                else await1<I, I>({ i -> emit(i, take(n-1)) })
+                else await1<I, I>({ i -> emit(i, take(n - 1)) })
 
         fun <I> takeWhile(f: (I) -> Boolean): Process1<I, I> =
                 await1({ i ->
@@ -479,15 +484,14 @@ sealed class Process<F, O> {
 
         fun <I> window2(): Process1<I, Pair<Option<I>, I>> {
             fun go(prev: Option<I>): Process1<I, Pair<Option<I>, I>> =
-                    await1({ i -> emit1<I, Pair<Option<I>, I>>(prev to i) plusP { go(Some(i)) } })
+                    await1({ i -> emit1<I, Pair<Option<I>, I>>(prev to i) + { go(Some(i)) } })
 
             return go(None)
         }
 
         /** Emits `sep` in between each input received. */
         fun <I> intersperse(sep: I): Process1<I, I> =
-                await1<I, I>({ i -> emit1<I, I>(i) plusP { id<I>().flatMap { i -> emit1<I, I>(sep) } } plusP { emit1(i) } })
-
+                await1<I, I>(recv = { i -> emit1<I, I>(i) + { id<I>().flatMap { i2 -> emit1<I, I>(sep) + { emit1(i2) } } } })
 
 
         fun <I, I2, A> narrow(value: H1<T<I, I2>.f, A>): T<I, I2>.Tf<A> = value as T<I, I2>.Tf<A>
@@ -542,7 +546,7 @@ sealed class Process<F, O> {
         /* Alternate pulling values from the left and the right inputs. */
         fun <I> interleaveT(): Tee<I, I, I> =
                 awaitL<I, I, I>({ i ->
-                    awaitR({ i2 -> emitT<I, I, I>(i) plusP { emitT(i2) } })
+                    awaitR({ i2 -> emitT<I, I, I>(i) + { emitT(i2) } })
                 }).repeat()
 
 
@@ -553,9 +557,15 @@ sealed class Process<F, O> {
                         { w -> constant { s: String -> eval<IOU, Unit>(IOF.IO { w.write(s) }) } },
                         { w -> eval_(IOF.IO { w.close() }) })
 
+        val printlnW: Sink<IOU, String> =
+                resource<Unit, (String) -> Process<IOU, Unit>>(
+                        IOF.IO { Unit },
+                        { w -> constant { s: String -> eval<IOU, Unit>(IOF.IO { println(s) }) } },
+                        { w -> eval_(IOF.IO { }) })
+
         /* The infinite, constant stream. */
         fun <A> constant(a: A): Process<IOU, A> =
-                eval(IOF.IO{ a }).flatMap { a -> Emit(a, constant(a)) }
+                eval(IOF.IO { a }).flatMap { a -> Emit(a, constant(a)) }
 
         /* Exercise 12: Implement `join`. Notice this is the standard monadic combinator! */
         fun <F, A> join(p: Process<F, Process<F, A>>): Process<F, A> =
@@ -583,7 +593,6 @@ class Is<I> {
 fun <I> Get(): H1<Is<I>.f, I> = Is<I>().Get
 
 typealias Process1<I, O> = Process<Is<I>.f, O>
-
 
 
 /*
@@ -628,35 +637,35 @@ definition of `to` in `Process` for an example of how to feed a
 typealias Sink<F, O> = Process<F, (O) -> Process<F, Unit>>
 
 
-    /*
-     * An example use of the combinators we have so far: incrementally
-     * convert the lines of a file from fahrenheit to celsius.
-     */
+/*
+ * An example use of the combinators we have so far: incrementally
+ * convert the lines of a file from fahrenheit to celsius.
+ */
 
 fun fahrenheitToCelsius(f: Double): Double = (f - 32) * 5.0 / 9.0
 
 val converter: Process<IOU, Unit> =
-        lines("fahrenheit.txt")
+        lines("fahrenheits.txt")
                 .filter { line -> !line.startsWith("#") && !line.trim().isEmpty() }
                 .map { line -> fahrenheitToCelsius(line.toDouble()).toString() }
                 .pipe(intersperse("\n"))
                 .to(fileW("celsius.txt"))
                 .drain()
 
-    /*
+/*
 More generally, we can feed a `Process` through an effectful
 channel which returns a value other than `Unit`.
-     */
+ */
 
 typealias Channel<F, I, O> = Process<F, (I) -> Process<F, O>>
 
-    /*
-     * Here is an example, a JDBC query runner which returns the
-     * stream of rows from the result set of the query. We have
-     * the channel take a `Connection -> PreparedStatement` as
-     * input, so code that uses this channel does not need to be
-     * responsible for knowing how to obtain a `Connection`.
-     */
+/*
+ * Here is an example, a JDBC query runner which returns the
+ * stream of rows from the result set of the query. We have
+ * the channel take a `Connection -> PreparedStatement` as
+ * input, so code that uses this channel does not need to be
+ * responsible for knowing how to obtain a `Connection`.
+ */
 
 fun query(connection: IO<Connection>)
         : Channel<IOU, (Connection) -> PreparedStatement, Map<String, Any>> =
@@ -689,47 +698,49 @@ fun query(connection: IO<Connection>)
                 },
                 { c -> IOF.IO { c.close() } })
 
-    /*
-     * We can allocate resources dynamically when defining a `Process`.
-     * As an example, this program reads a list of filenames to process
-     * _from another file_, opening each file, processing it and closing
-     * it promptly.
-     */
+/*
+ * We can allocate resources dynamically when defining a `Process`.
+ * As an example, this program reads a list of filenames to process
+ * _from another file_, opening each file, processing it and closing
+ * it promptly.
+ */
 
-    val convertAll: Process<IOU, Unit> =
-            fileW("celsius.txt").once().flatMap { out ->
-                lines("fahrenheits.txt").flatMap { file ->
-                    lines(file).map { line -> fahrenheitToCelsius(line.toDouble()) }.flatMap { celsius ->
-                        out(celsius.toString())
-                    }
+val convertAll: Process<IOU, Unit> =
+        fileW("celsius.txt").once().flatMap { out ->
+            lines("fahrenheits.txt").flatMap { file ->
+                lines(file).map { line -> fahrenheitToCelsius(line.toDouble()) }.flatMap { celsius ->
+                    out(celsius.toString())
                 }
-            }.drain<Unit>()
+            }
+        }.drain<Unit>()
 
 
-    /*
-     * Just by switching the order of the `flatMap` calls, we can output
-     * to multiple files.
-     */
-    val convertMultisink: Process<IOU, Unit> =
-            lines("fahrenheits.txt").flatMap { file ->
-                lines(file).map { line -> fahrenheitToCelsius(line.toDouble()) }
-                        .map { it.toString() }.to(fileW("$file.celsius"))
-            }.drain<Unit>()
+/*
+ * Just by switching the order of the `flatMap` calls, we can output
+ * to multiple files.
+ */
+val convertMultisink: Process<IOU, Unit> =
+        lines("fahrenheits.txt").flatMap { file ->
+            lines(file).map { line -> fahrenheitToCelsius(line.toDouble()) }
+                    .map { it.toString() }.to(fileW("$file.celsius"))
+        }.drain<Unit>()
 
-    /*
-     * We can attach filters or other transformations at any point in the
-     * program, for example:
-     */
-    val convertMultisink2: Process<IOU, Unit> =
-            lines("fahrenheits.txt").flatMap { file ->
-                lines(file).filter { !it.startsWith("#") }
-                        .map { line -> fahrenheitToCelsius(line.toDouble()) }
-                        .filter { it > 0 }
-                        .map { it.toString() }
-                        .to(fileW("$file.celsius"))
-            }.drain<Unit>()
+/*
+ * We can attach filters or other transformations at any point in the
+ * program, for example:
+ */
+val convertMultisink2: Process<IOU, Unit> =
+        lines("fahrenheits.txt").flatMap { file ->
+            lines(file).filter { !it.startsWith("#") }
+                    .map { line -> fahrenheitToCelsius(line.toDouble()) }
+                    .filter { it > 0 }
+                    .map { it.toString() }
+                    .to(fileW("$file.celsius"))
+        }.drain<Unit>()
 
 fun main(arg: Array<String>) {
+    val E = java.util.concurrent.Executors.newFixedThreadPool(4)
+
     val p = eval(IOF.IO { println("woot"); 1 }).repeat()
     val p2 = eval(IOF.IO { println("cleanup"); 2 }).onHalt {
         when (it) {
@@ -741,7 +752,7 @@ fun main(arg: Array<String>) {
         }
     }
 
-    println { runLog(p2.onComplete{ p2 }.onComplete{ p2 }.take(1).take(1)) }
-    println { runLog(converter) }
-    // println { Process.collect(Process.convertAll) }
+    println(runLog(p2.onComplete{ p2 }.onComplete{ p2 }.take(1).take(1)).unsafePerformIO(E).joinToString())
+    println(runLog(converter).unsafePerformIO(E).joinToString())
+//     println { Process.collect(Process.convertAll) }
 }
